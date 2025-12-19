@@ -27,16 +27,16 @@ services:
       - UNITRADE_CONFIG=/app/config/default.yaml
       - METRICS_ENABLED=true
       - METRICS_PORT=8000
-    command: ["python", "-m", "unitrade.cli", "serve", "--port", "8080", "--interval", "60"]
+    command: ["python", "-m", "unitrade.cli", "serve", "--port", "${DASHBOARD_PORT:-8080}", "--interval", "60"]
     ports:
-      - "8080:8080" # Dashboard
+      - "${DASHBOARD_PORT:-8080}:${DASHBOARD_PORT:-8080}" # Dashboard
       - "8000:8000" # Prometheus metrics (/metrics)
     volumes:
       - ../data:/app/data
       - ../config:/app/config
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health').read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${DASHBOARD_PORT:-8080}/health').read()"]
       interval: 30s
       timeout: 10s
       retries: 3
