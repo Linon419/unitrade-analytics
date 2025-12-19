@@ -1,0 +1,448 @@
+﻿//@version=5
+indicator("波段过滤器 V78 | 专属定制版", shorttitle="波段V78+Custom", overlay=false, max_lines_count=500, max_labels_count=500)
+
+// ==============================================================================
+// 1. 核心模块选择
+// ==============================================================================
+grp_core = "🔧 核心算法"
+algo_type  = input.string("WaveTrend + MFI Hybrid", title="核心模块", options=["WaveTrend Oscillator", "WaveTrend + MFI Hybrid", "True Strength Index (TSI)", "Chaikin Money Flow (CMF)", "Commodity Channel Index (CCI)", "Money Flow Index (MFI)", "Standard RSI", "Volume Weighted RSI", "Fisher Transform", "Connors RSI"], group=grp_core)
+
+// WaveTrend + MFI 融合参数
+grp_hybrid = "🔀 混合算法"
+hybrid_wt_weight = input.float(0.4, title="WaveTrend权重", minval=0.0, maxval=1.0, step=0.1, group=grp_hybrid, tooltip="WaveTrend占比，MFI权重 = 1 - 此值")
+hybrid_mfi_len = input.int(7, title="MFI周期(混合)", minval=1, group=grp_hybrid)
+
+// ==============================================================================
+// 2. 核心参数
+// ==============================================================================
+len        = input.int(9, title="主通道周期 / TSI长周期", group=grp_core)
+avg_len    = input.int(7, title="信号周期 / TSI短周期", group=grp_core)
+smooth_len = input.int(4, title="平滑周期", group=grp_core)
+ma_type    = input.string("ALMA", title="平滑算法", options=["SMA", "EMA", "HMA", "ALMA", "Laguerre"], group=grp_core)
+
+use_sigmoid = input.bool(true, title="启用非线性挤压 (Sigmoid)", group=grp_core)
+sigmoid_gain = input.float(1.8, title="挤压强度", group=grp_core)
+
+mult       = input.float(1.2, title="振幅系数", group=grp_core)
+stepSize   = input.float(6.6, title="阶梯步长", group=grp_core)
+
+use_ha     = input.bool(true, title="使用HA数据", group=grp_core)
+
+// Laguerre 参数
+laguerre_gamma = input.float(0.66, title="Laguerre Gamma", minval=0.0, maxval=0.99, step=0.01, group=grp_core, tooltip="Laguerre滤波器平滑系数，0.7-0.85效果较好。越高越平滑但延迟越大")
+
+// ==============================================================================
+// 3. 成交量设置
+// ==============================================================================
+grp_vol = "📊 成交量"
+vol_len = input.int(60, title="成交量阈值周期", group=grp_vol)
+vol_trigger = input.float(1.6, title="成交量启动阈系数", group=grp_vol)
+vol_weight = input.float(3.0, title="成交量权重", group=grp_vol)
+
+// ==============================================================================
+// 4. 阈值设置
+// ==============================================================================
+grp_thresh = "📐 阈值"
+lvl_1 = input.float(45.0, title="一级阈系数(买/卖)", group=grp_thresh)
+lvl_2_base = input.float(60.0, title="二级基准阈系数(原)", group=grp_thresh)
+lvl_2_floor = input.float(50.0, title="二级最低阈系数", group=grp_thresh)
+lvl_3_base = input.float(68.0, title="三级基准阈系数(原)", group=grp_thresh)
+osc_max = input.float(60.0, title="OSC上限", group=grp_thresh)
+osc_min = input.float(-60.0, title="OSC下限", group=grp_thresh)
+
+// ==============================================================================
+// 5. 波动预警设置 (BB/KC挤压模型)
+// ==============================================================================
+grp_volatility_warning = "⚠️ 波动预警"
+show_volatility_warning = input.bool(true, title="启用波动预警", group=grp_volatility_warning)
+squeeze_len = input.int(20, title="波动周期", group=grp_volatility_warning)
+bb_mult = input.float(2.0, title="BB标准差系数", group=grp_volatility_warning)
+kc_mult = input.float(1.5, title="KC ATR乘数", group=grp_volatility_warning)
+atr_len = input.int(20, title="ATR周期", group=grp_volatility_warning)
+min_squeeze_duration = input.int(5, title="L1最小持续周期", group=grp_volatility_warning)
+tightness_l2_ratio = input.float(0.80, title="L2最紧凑比率", group=grp_volatility_warning)
+squeeze_box_color = input.color(color.new(#787B86, 70), title="挤压区域颜色", group=grp_volatility_warning)
+
+// ==============================================================================
+// 6. 背离设置
+// ==============================================================================
+grp_div = "🔀 背离与设置"
+show_div = input.bool(true, title="显示背离标签", group=grp_div)
+show_div_line = input.bool(true, title="显示背离连线", group=grp_div)
+div_color = input.color(color.new(#787B86, 0), title="背离颜色", group=grp_div)
+lb_left  = input.int(5, title="左侧结构", group=grp_div)
+lb_right = input.int(3, title="右侧确认", group=grp_div)
+search_limit = input.int(65, title="搜索周期", group=grp_div)
+
+use_adx_filter_div = input.bool(false, title="🛡 ADX强势过滤假背离", group=grp_div)
+use_adx_gray_color = input.bool(false, title="🎨 强势ADX灰色警示", group=grp_div)
+require_candle_conf = input.bool(true, title="🕯️ 蜡烛/阴线确认", group=grp_div)
+
+adx_len = input.int(14, title="ADX周期", group=grp_div)
+adx_limit = input.int(30, title="ADX阈值", group=grp_div)
+
+// ==============================================================================
+// 7. 视觉设置
+// ==============================================================================
+grp_display = "🎨 显示"
+show_indicator_line = input.bool(true, title="显示指示线", group=grp_display)
+lvl1_ob_color = input.color(color.new(#ef5350, 0), title="一级超买", inline="c1", group=grp_display)
+lvl1_os_color = input.color(color.new(#26a69a, 0), title="一级超卖", inline="c1", group=grp_display)
+lvl2_color = input.color(color.new(#fdd835, 0), title="二级(黄)", group=grp_display)
+lvl3_color = input.color(color.new(#2962ff, 0), title="三级(蓝)", group=grp_display)
+mplus_label_color = input.color(color.new(#ff9800, 0), title="M+背离标签", group=grp_display, tooltip="有放量确认的背离信号颜色")
+
+// ==============================================================================
+// 核心函数库
+// ==============================================================================
+
+// Laguerre Filter 实现
+get_laguerre(src, gamma) =>
+    var float L0 = 0.0
+    var float L1 = 0.0
+    var float L2 = 0.0
+    var float L3 = 0.0
+    L0 := (1.0 - gamma) * src + gamma * nz(L0[1])
+    L1 := -gamma * L0 + nz(L0[1]) + gamma * nz(L1[1])
+    L2 := -gamma * L1 + nz(L1[1]) + gamma * nz(L2[1])
+    L3 := -gamma * L2 + nz(L2[1]) + gamma * nz(L3[1])
+    (L0 + 2.0 * L1 + 2.0 * L2 + L3) / 6.0
+
+get_ma(source, length, type) =>
+    switch type
+        "SMA"  => ta.sma(source, length)
+        "EMA"  => ta.ema(source, length)
+        "HMA"  => ta.hma(source, length)
+        "ALMA" => ta.alma(source, length, 0.85, 6)
+        "Laguerre" => get_laguerre(source, laguerre_gamma)
+        => ta.sma(source, length)
+
+get_wavetrend(src, chlen, avglen, smlen) =>
+    esa = ta.ema(src, chlen)
+    d = ta.ema(math.abs(src - esa), chlen)
+    ci = (src - esa) / (0.015 * d)
+    wt1 = get_ma(ci, avglen, "EMA") 
+    wt2 = get_ma(wt1, smlen, "ALMA")
+    wt2
+
+get_vw_rsi(src, len) =>
+    change = ta.change(src)
+    up = ta.rma(math.max(change, 0) * volume, len)
+    down = ta.rma(-math.min(change, 0) * volume, len)
+    rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+    rsi - 50
+
+get_fisher(src, len) =>
+    var float val = 0.0
+    var float fisher = 0.0
+    high_val = ta.highest(src, len)
+    low_val = ta.lowest(src, len)
+    div = (high_val - low_val)
+    val := div == 0 ? 0 : 0.66 * ((src - low_val) / div - 0.5) + 0.67 * nz(val[1])
+    val := val > 0.99 ? 0.999 : val < -0.99 ? -0.999 : val
+    fisher := 0.5 * math.log((1 + val) / (1 - val)) + 0.5 * nz(fisher[1])
+    fisher
+
+get_tsi(src, long_len, short_len) =>
+    ta.tsi(src, short_len, long_len) * 0.6
+
+get_cmf(len) =>
+    ad = close == high and close == low or high == low ? 0 : ((2 * close - low - high) / (high - low)) * volume
+    mf = ta.sma(ad, len) / ta.sma(volume, len)
+    mf * 150 
+
+get_cci(src, len) =>
+    ta.cci(src, len) / 3.0
+
+get_wt_mfi_hybrid(src, chlen, avglen, smlen, mfi_len, wt_weight) =>
+    wt_val = get_wavetrend(src, chlen, avglen, smlen)
+    mfi_val = (ta.mfi(hlc3, mfi_len) - 50) * 1.5
+    wt_weight * wt_val + (1.0 - wt_weight) * mfi_val
+
+get_sigmoid(src, gain) =>
+    val = src / 100.0 
+    sig = 2.0 / (1.0 + math.exp(-gain * val)) - 1.0
+    sig * 100.0
+
+// ==============================================================================
+// 数据处理逻辑
+// ==============================================================================
+ha_ticker = ticker.heikinashi(syminfo.tickerid)
+ha_src    = request.security(ha_ticker, timeframe.period, hlc3)
+ha_open   = request.security(ha_ticker, timeframe.period, open)
+ha_close  = request.security(ha_ticker, timeframe.period, close)
+
+src = use_ha ? ha_src : hlc3
+curr_open = use_ha ? ha_open : open
+curr_close = use_ha ? ha_close : close
+
+float raw_val = 0.0
+
+if algo_type == "WaveTrend Oscillator"
+    raw_val := get_wavetrend(src, len, avg_len, smooth_len)
+else if algo_type == "WaveTrend + MFI Hybrid"
+    raw_val := get_wt_mfi_hybrid(src, len, avg_len, smooth_len, hybrid_mfi_len, hybrid_wt_weight)
+else if algo_type == "True Strength Index (TSI)"
+    raw_val := get_tsi(src, len, avg_len)
+else if algo_type == "Chaikin Money Flow (CMF)"
+    raw_val := get_cmf(len)
+else if algo_type == "Commodity Channel Index (CCI)"
+    raw_val := get_cci(src, len)
+else if algo_type == "Money Flow Index (MFI)"
+    raw_val := ta.mfi(hlc3, len) - 50
+else if algo_type == "Standard RSI"
+    raw_val := ta.rsi(src, len) - 50
+else if algo_type == "Volume Weighted RSI"
+    raw_val := get_vw_rsi(src, len)
+else if algo_type == "Fisher Transform"
+    raw_val := get_fisher(src, len) * 20
+else if algo_type == "Connors RSI" 
+    raw_val := ta.rsi(src, len) - 50 
+
+processed_val = use_sigmoid ? get_sigmoid(raw_val * mult, sigmoid_gain) : (raw_val * mult)
+final_val = get_ma(processed_val, smooth_len, ma_type)
+
+osc_limited = math.max(osc_min, math.min(osc_max, final_val))
+scaled_val = osc_limited / stepSize
+osc_raw = math.sign(scaled_val) * math.floor(math.abs(scaled_val)) * stepSize
+osc = math.max(osc_min, math.min(osc_max, osc_raw))
+
+// ==============================================================================
+// 波动预警计算 (BB/KC 挤压模型)
+// ==============================================================================
+atr_val = ta.atr(atr_len)
+kc_mid = ta.ema(close, squeeze_len)
+kc_top = kc_mid + kc_mult * atr_val
+kc_bot = kc_mid - kc_mult * atr_val
+
+bb_mid = ta.sma(close, squeeze_len)
+bb_std = ta.stdev(close, squeeze_len)
+bb_top = bb_mid + bb_mult * bb_std
+bb_bot = bb_mid - bb_mult * bb_std
+
+is_squeeze = (bb_top < kc_top) and (bb_bot > kc_bot)
+squeeze_count = ta.barssince(not is_squeeze)
+
+kc_width = kc_top - kc_bot
+bb_width = bb_top - bb_bot
+tightness_ratio = kc_width != 0 ? bb_width / kc_width : 1.0
+
+vol_warning_L1 = is_squeeze and (squeeze_count >= min_squeeze_duration)
+vol_warning_L2 = vol_warning_L1 and (tightness_ratio <= tightness_l2_ratio)
+
+// ==============================================================================
+// 柱图与颜色
+// ==============================================================================
+vol_ma = ta.sma(volume, vol_len)
+vol_std = ta.stdev(volume, vol_len)
+vol_zscore = vol_std != 0 ? (volume - vol_ma) / vol_std : 0
+effective_vol = math.max(0, vol_zscore - vol_trigger)
+
+lvl_2_dynamic = math.max(lvl_2_floor, lvl_2_base - effective_vol * vol_weight)
+lvl_3_dynamic = math.max(48.0, lvl_3_base - effective_vol * vol_weight)
+
+[di_plus, di_minus, adx_val] = ta.dmi(adx_len, adx_len)
+is_trend_strong = (adx_val > adx_limit)
+
+get_bar_color(val, l2, l3) =>
+    abs_v = math.abs(val)
+    if abs_v >= l3
+        color.new(lvl3_color, 0)
+    else if abs_v >= l2
+        color.new(lvl2_color, 0)
+    else if abs_v >= lvl_1
+        val > 0 ? color.new(lvl1_ob_color, 0) : color.new(lvl1_os_color, 0)
+    else
+        color.new(#787B86, 100)
+
+base_color = get_bar_color(osc, lvl_2_dynamic, lvl_3_dynamic)
+final_color = (is_trend_strong and use_adx_gray_color) ? color.new(color.gray, 60) : base_color
+
+in_zone = math.abs(osc) >= lvl_1
+var float box_bot = na
+var float box_top = na
+if in_zone
+    box_bot := osc > 0 ? lvl_1 : osc
+    box_top := osc > 0 ? osc : -lvl_1
+else
+    box_bot := na
+    box_top := na
+
+plotcandle(box_bot, box_top, box_bot, box_top, title="能量柱", color=final_color, wickcolor=final_color, bordercolor=final_color)
+plot(show_indicator_line ? osc : na, title="指示线", color=color.new(color.gray, 30), linewidth=2, style=plot.style_stepline)
+
+hline(0, "零轴", color=color.new(color.gray, 60))
+hline(lvl_1, "一级上轨", color=color.new(color.gray, 70), linestyle=hline.style_dotted)
+hline(-lvl_1, "一级下轨", color=color.new(color.gray, 70), linestyle=hline.style_dotted)
+
+// ==============================================================================
+// 波动预警可视化 - 在中间区域绘制灰色矩形
+// ==============================================================================
+squeeze_box_top = show_volatility_warning and vol_warning_L1 ? lvl_1 : na
+squeeze_box_bot = show_volatility_warning and vol_warning_L1 ? -lvl_1 : na
+squeeze_color_final = vol_warning_L2 ? color.new(#ff9800, 70) : squeeze_box_color
+
+plotcandle(squeeze_box_bot, squeeze_box_top, squeeze_box_bot, squeeze_box_top, title="波动预警区域", color=squeeze_color_final, wickcolor=squeeze_color_final, bordercolor=squeeze_color_final)
+
+// ==============================================================================
+// 背离检测 (分级 L1-L4 + M+ 因子)
+// ==============================================================================
+var int bull_seq = 0
+var int bear_seq = 0
+var int last_bull_idx = 0
+var int last_bear_idx = 0
+
+// 背离提醒信号变量
+var bool bull_div_signal = false
+var bool bear_div_signal = false
+var bool bull_div_mplus_signal = false
+var bool bear_div_mplus_signal = false
+bull_div_signal := false
+bear_div_signal := false
+bull_div_mplus_signal := false
+bear_div_mplus_signal := false
+
+is_green_candle = curr_close >= curr_open
+is_red_candle   = curr_close < curr_open
+allow_div_by_adx = use_adx_filter_div ? (not is_trend_strong) : true
+
+pl = ta.pivotlow(osc, lb_left, lb_right)
+ph = ta.pivothigh(osc, lb_left, lb_right)
+
+// 看跌背离检测
+if show_div and not na(ph) and allow_div_by_adx
+    if not require_candle_conf or is_red_candle
+        curr_idx = bar_index - lb_right
+        curr_osc = ph
+        curr_price = high[lb_right]
+        bool has_div = false
+        int div_idx = 0
+        float div_osc = 0.0
+        for i = 1 to search_limit
+            check_osc = osc[lb_right + i]
+            is_peak = check_osc >= osc[lb_right + i + 1] and check_osc >= osc[lb_right + i - 1]
+            if is_peak and check_osc >= lvl_1
+                if curr_price > high[lb_right + i] and curr_osc <= check_osc
+                    has_div := true
+                    div_idx := i
+                    div_osc := check_osc
+                    break
+        if has_div
+            int div_level = 0
+            if div_idx <= 15
+                div_level := 1
+            else if div_idx <= 35
+                div_level := 2
+            else if div_idx <= 55
+                div_level := 3
+            else
+                div_level := 4
+            
+            bool is_m_plus = vol_zscore > vol_trigger
+            string div_text = str.tostring(div_level)
+            if is_m_plus
+                div_text := div_text + "M+"
+            
+            if (curr_idx - last_bear_idx) > search_limit
+                bear_seq := 1
+            else
+                bear_seq += 1
+            bull_seq := 0
+            last_bear_idx := curr_idx
+            
+            string final_label_text = "空" + div_text + (bear_seq > 1 ? (" x" + str.tostring(bear_seq)) : "")
+            
+            if show_div_line
+                line.new(curr_idx - div_idx, div_osc, curr_idx, curr_osc, color=color.new(color.gray, 50), style=line.style_dashed)
+            
+            label_color = is_m_plus ? mplus_label_color : color.new(#2f353d, 0)
+            label_size = is_m_plus ? size.small : size.tiny
+            label.new(curr_idx, curr_osc + 3, text=final_label_text, style=label.style_label_down, color=label_color, textcolor=color.white, size=label_size)
+            
+            // 触发背离提醒信号
+            bear_div_signal := true
+            if is_m_plus
+                bear_div_mplus_signal := true
+
+// 看涨背离检测
+if show_div and not na(pl) and allow_div_by_adx
+    if not require_candle_conf or is_green_candle
+        curr_idx = bar_index - lb_right
+        curr_osc = pl
+        curr_price = low[lb_right]
+        bool has_div = false
+        int div_idx = 0
+        float div_osc = 0.0
+        for i = 1 to search_limit
+            check_osc = osc[lb_right + i]
+            is_bottom = check_osc <= osc[lb_right + i + 1] and check_osc <= osc[lb_right + i - 1]
+            if is_bottom and check_osc <= -lvl_1
+                if curr_price < low[lb_right + i] and curr_osc >= check_osc
+                    has_div := true
+                    div_idx := i
+                    div_osc := check_osc
+                    break
+        if has_div
+            int div_level = 0
+            if div_idx <= 15
+                div_level := 1
+            else if div_idx <= 35
+                div_level := 2
+            else if div_idx <= 55
+                div_level := 3
+            else
+                div_level := 4
+            
+            bool is_m_plus = vol_zscore > vol_trigger
+            string div_text = str.tostring(div_level)
+            if is_m_plus
+                div_text := div_text + "M+"
+            
+            if (curr_idx - last_bull_idx) > search_limit
+                bull_seq := 1
+            else
+                bull_seq += 1
+            bear_seq := 0
+            last_bull_idx := curr_idx
+            
+            string final_label_text = "多" + div_text + (bull_seq > 1 ? (" x" + str.tostring(bull_seq)) : "")
+            
+            if show_div_line
+                line.new(curr_idx - div_idx, div_osc, curr_idx, curr_osc, color=color.new(color.gray, 50), style=line.style_dashed)
+            
+            label_color = is_m_plus ? mplus_label_color : color.new(#2f353d, 0)
+            label_size = is_m_plus ? size.small : size.tiny
+            label.new(curr_idx, curr_osc - 3, text=final_label_text, style=label.style_label_up, color=label_color, textcolor=color.white, size=label_size)
+            
+            // 触发背离提醒信号
+            bull_div_signal := true
+            if is_m_plus
+                bull_div_mplus_signal := true
+
+// ==============================================================================
+// 超买超卖状态检测
+// ==============================================================================
+enter_overbought = osc >= lvl_1 and osc[1] < lvl_1
+enter_oversold = osc <= -lvl_1 and osc[1] > -lvl_1
+exit_overbought = osc < lvl_1 and osc[1] >= lvl_1
+exit_oversold = osc > -lvl_1 and osc[1] <= -lvl_1
+
+// ==============================================================================
+// 预警提示
+// ==============================================================================
+// 波动预警 (L1/L2合并)
+vol_warning_trigger = (vol_warning_L1 and not vol_warning_L1[1]) or (vol_warning_L2 and not vol_warning_L2[1])
+vol_warning_msg = vol_warning_L2 ? "L2高确信 - 极端压缩，大幅波动即将来临" : "L1预警 - 市场进入低波动压缩状态"
+alertcondition(vol_warning_trigger, title="波动预警", message="{{ticker}} {{interval}} - 波动预警触发")
+
+// 背离提醒
+alertcondition(bull_div_signal, title="看涨背离", message="{{ticker}} {{interval}} - 检测到看涨背离信号")
+alertcondition(bear_div_signal, title="看跌背离", message="{{ticker}} {{interval}} - 检测到看跌背离信号")
+alertcondition(bull_div_mplus_signal, title="看涨背离M+", message="{{ticker}} {{interval}} - 检测到放量看涨背离信号 (M+)")
+alertcondition(bear_div_mplus_signal, title="看跌背离M+", message="{{ticker}} {{interval}} - 检测到放量看跌背离信号 (M+)")
+
+// 超买超卖提醒
+alertcondition(enter_overbought, title="进入超买区", message="{{ticker}} {{interval}} - 进入超买区域")
+alertcondition(enter_oversold, title="进入超卖区", message="{{ticker}} {{interval}} - 进入超卖区域")
+alertcondition(exit_overbought, title="退出超买区", message="{{ticker}} {{interval}} - 退出超买区域")
+alertcondition(exit_oversold, title="退出超卖区", message="{{ticker}} {{interval}} - 退出超卖区域")

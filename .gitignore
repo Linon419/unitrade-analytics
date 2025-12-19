@@ -1,0 +1,60 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.venv/
+venv/
+env/
+
+# build / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# test / coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+
+# notebooks
+.ipynb_checkpoints/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# local env / secrets (keep default.yaml tracked, put overrides here)
+.env
+.env.*
+*.env
+config/local.yaml
+config/override.yaml
+config/*.local.yaml
+config/*.override.yaml
+
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+*.log
+api_response.json
+*_api_response.json
+report_output.json
+updates.json

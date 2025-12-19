@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UniTrade Analytics - 设置</title>
+    <style>
+        :root {
+            --bg-primary: #0f1419;
+            --bg-secondary: #1a1f2e;
+            --bg-card: #252d3a;
+            --accent-primary: #7c3aed;
+            --accent-secondary: #a855f7;
+            --accent-success: #22c55e;
+            --accent-warning: #eab308;
+            --accent-danger: #ef4444;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --border-color: #334155;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, var(--bg-primary) 0%, #1a1a2e 100%);
+            color: var(--text-primary);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        /* Header */
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .header-icon {
+            font-size: 28px;
+        }
+
+        .header-title {
+            font-size: 20px;
+            font-weight: 600;
+        }
+
+        .header-subtitle {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        /* Info Card */
+        .info-card {
+            background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 24px;
+        }
+
+        .info-card-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .info-card-text {
+            font-size: 13px;
+            opacity: 0.9;
+            line-height: 1.5;
+        }
+
+        /* Section */
+        .section {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+
+        .section-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+        }
+
+        /* Menu Button Grid */
+        .menu-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+        }
+
+        .menu-btn {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 16px 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .menu-btn:hover {
+            background: var(--bg-primary);
+            border-color: var(--accent-primary);
+            transform: translateY(-2px);
+        }
+
+        .menu-btn:active {
+            transform: scale(0.98);
+        }
+
+        .menu-btn-icon {
+            font-size: 24px;
+        }
+
+        .menu-btn-text {
+            font-size: 11px;
+            color: var(--text-secondary);
+            text-align: center;
+            line-height: 1.3;
+        }
+
+        /* Topic Settings */
+        .topic-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .topic-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            background: var(--bg-secondary);
+            border-radius: 10px;
+            border: 1px solid var(--border-color);
+        }
+
+        .topic-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .topic-icon {
+            font-size: 20px;
+        }
+
+        .topic-name {
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .topic-status {
+            font-size: 11px;
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-weight: 500;
+        }
+
+        .topic-status.configured {
+            background: rgba(34, 197, 94, 0.2);
+            color: var(--accent-success);
+        }
+
+        .topic-status.pending {
+            background: rgba(234, 179, 8, 0.2);
+            color: var(--accent-warning);
+        }
+
+        /* Input Field */
+        .input-group {
+            margin-bottom: 12px;
+        }
+
+        .input-label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+            display: block;
+        }
+
+        .input-field {
+            width: 100%;
+            padding: 12px 16px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            color: var(--text-primary);
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .input-field:focus {
+            border-color: var(--accent-primary);
+        }
+
+        .input-field::placeholder {
+            color: var(--text-secondary);
+        }
+
+        /* Toggle Switch */
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .toggle-row:last-child {
+            border-bottom: none;
+        }
+
+        .toggle-label {
+            font-size: 14px;
+        }
+
+        .toggle-switch {
+            position: relative;
+            width: 48px;
+            height: 26px;
+            background: var(--border-color);
+            border-radius: 13px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .toggle-switch.active {
+            background: var(--accent-primary);
+        }
+
+        .toggle-switch::after {
+            content: '';
+            position: absolute;
+            width: 22px;
+            height: 22px;
+            background: white;
+            border-radius: 50%;
+            top: 2px;
+            left: 2px;
+            transition: transform 0.2s;
+        }
+
+        .toggle-switch.active::after {
+            transform: translateX(22px);
+        }
+
+        /* Action Buttons */
+        .action-buttons {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .action-btn {
+            padding: 14px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .action-btn.primary {
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            color: white;
+        }
+
+        .action-btn.secondary {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .action-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(124, 58, 237, 0.3);
+        }
+
+        .action-btn.danger {
+            background: var(--accent-danger);
+            color: white;
+        }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            margin-top: 24px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .footer-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 10px 20px;
+            background: transparent;
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+
+        .footer-btn:hover {
+            color: var(--text-primary);
+            border-color: var(--accent-primary);
+        }
+
+        /* Toast Notification */
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: var(--bg-card);
+            color: var(--text-primary);
+            padding: 14px 24px;
+            border-radius: 12px;
+            border: 1px solid var(--accent-success);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            opacity: 0;
+            transition: all 0.3s ease;
+            z-index: 1000;
+        }
+
+        .toast.show {
+            transform: translateX(-50%) translateY(0);
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <span class="header-icon">⚙️</span>
+            <div>
+                <div class="header-title">UniTrade Settings</div>
+                <div class="header-subtitle">配置 Telegram 机器人话题路由</div>
+            </div>
+        </div>
+
+        <!-- Info Card -->
+        <div class="info-card">
+            <div class="info-card-title">💡 话题频道配置说明</div>
+            <div class="info-card-text">
+                将不同类型的信号发送到对应的 Telegram 话题频道。
+                获取话题 ID: 右键话题第一条消息 → 复制消息链接 → 链接中的数字即为 ID。
+            </div>
+        </div>
+
+        <!-- Basic Config -->
+        <div class="section">
+            <div class="section-title">基本配置</div>
+            <div class="input-group">
+                <label class="input-label">Bot Token</label>
+                <input type="password" class="input-field" id="botToken" placeholder="输入 Telegram Bot Token">
+            </div>
+            <div class="input-group">
+                <label class="input-label">群组 ID (Chat ID)</label>
+                <input type="text" class="input-field" id="chatId" placeholder="例如: -1001234567890">
+            </div>
+            <div class="toggle-row">
+                <span class="toggle-label">启用 Telegram 推送</span>
+                <div class="toggle-switch active" onclick="this.classList.toggle('active')"></div>
+            </div>
+        </div>
+
+        <!-- Menu Buttons -->
+        <div class="section">
+            <div class="section-title">快捷功能</div>
+            <div class="menu-grid">
+                <div class="menu-btn" onclick="showToast('测试消息已发送')">
+                    <span class="menu-btn-icon">📤</span>
+                    <span class="menu-btn-text">测试推送</span>
+                </div>
+                <div class="menu-btn" onclick="showToast('正在刷新配置...')">
+                    <span class="menu-btn-icon">🔄</span>
+                    <span class="menu-btn-text">刷新配置</span>
+                </div>
+                <div class="menu-btn">
+                    <span class="menu-btn-icon">📊</span>
+                    <span class="menu-btn-text">查看状态</span>
+                </div>
+                <div class="menu-btn">
+                    <span class="menu-btn-icon">🌸</span>
+                    <span class="menu-btn-text">EMA 雷达</span>
+                </div>
+                <div class="menu-btn">
+                    <span class="menu-btn-icon">📈</span>
+                    <span class="menu-btn-text">WaveTrend</span>
+                </div>
+                <div class="menu-btn">
+                    <span class="menu-btn-icon">⏰</span>
+                    <span class="menu-btn-text">波动预警</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Topic Config -->
+        <div class="section">
+            <div class="section-title">话题频道映射</div>
+            <div class="topic-list">
+                <div class="topic-item">
+                    <div class="topic-info">
+                        <span class="topic-icon">📊</span>
+                        <span class="topic-name">超买/超卖</span>
+                    </div>
+                    <span class="topic-status pending">待配置</span>
+                </div>
+                <div class="topic-item">
+                    <div class="topic-info">
+                        <span class="topic-icon">📈</span>
+                        <span class="topic-name">放量背离</span>
+                    </div>
+                    <span class="topic-status pending">待配置</span>
+                </div>
+                <div class="topic-item">
+                    <div class="topic-info">
+                        <span class="topic-icon">📉</span>
+                        <span class="topic-name">普通背离</span>
+                    </div>
+                    <span class="topic-status pending">待配置</span>
+                </div>
+                <div class="topic-item">
+                    <div class="topic-info">
+                        <span class="topic-icon">⏰</span>
+                        <span class="topic-name">4h/1h波动预警</span>
+                    </div>
+                    <span class="topic-status pending">待配置</span>
+                </div>
+                <div class="topic-item">
+                    <div class="topic-info">
+                        <span class="topic-icon">📅</span>
+                        <span class="topic-name">日线/周线预警</span>
+                    </div>
+                    <span class="topic-status pending">待配置</span>
+                </div>
+                <div class="topic-item">
+                    <div class="topic-info">
+                        <span class="topic-icon">🌸</span>
+                        <span class="topic-name">EMA开花</span>
+                    </div>
+                    <span class="topic-status pending">待配置</span>
+                </div>
+                <div class="topic-item">
+                    <div class="topic-info">
+                        <span class="topic-icon">💪</span>
+                        <span class="topic-name">EMA进入强势/弱势</span>
+                    </div>
+                    <span class="topic-status pending">待配置</span>
+                </div>
+                <div class="topic-item">
+                    <div class="topic-info">
+                        <span class="topic-icon">🏆</span>
+                        <span class="topic-name">EMA最强/最弱</span>
+                    </div>
+                    <span class="topic-status pending">待配置</span>
+                </div>
+                <div class="topic-item">
+                    <div class="topic-info">
+                        <span class="topic-icon">💬</span>
+                        <span class="topic-name">General</span>
+                    </div>
+                    <span class="topic-status configured">已配置</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="action-buttons">
+            <button class="action-btn secondary" onclick="showToast('配置导出成功')">
+                📋 导出配置
+            </button>
+            <button class="action-btn primary" onclick="showToast('配置已保存')">
+                💾 保存设置
+            </button>
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+            <button class="footer-btn">
+                ↩️ 返回主菜单
+            </button>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast">配置已保存</div>
+
+    <script>
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.add('show');
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 2500);
+        }
+
+        // 模拟加载配置 (实际使用时从 API 获取)
+        document.addEventListener('DOMContentLoaded', () => {
+            // 可以在这里添加加载配置的逻辑
+            console.log('Settings page loaded');
+        });
+    </script>
+</body>
+</html>

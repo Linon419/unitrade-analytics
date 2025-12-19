@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unitrade-analytics"
+version = "1.0.0"
+description = "Cryptocurrency Trading Analytics Gateway"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "UniTrade Team"}
+]
+keywords = ["crypto", "trading", "analytics", "binance", "bybit"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "aiohttp>=3.9.0",
+    "redis>=5.0.0",
+    "numpy>=1.26.0",
+    "pandas>=2.1.0",
+    "pandas-ta>=0.3.14b0",
+    "sortedcontainers>=2.4.0",
+    "pyyaml>=6.0",
+    "prometheus-client>=0.19.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[project.scripts]
+unitrade = "unitrade.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/unitrade/unitrade-analytics"
+Documentation = "https://github.com/unitrade/unitrade-analytics#readme"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
