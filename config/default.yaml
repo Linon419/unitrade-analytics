@@ -69,8 +69,11 @@ anomaly_detector:
   cooldown_seconds: 1800
   
   scan_all: true
+  universe_max_symbols: 0  # 0 disables cap
   top_n: 50
   exclude_symbols: []
+  candidate_max_ema200_distance_pct: 0  # 0 disables EMA proximity filter
+  candidate_below_ema200_only: false
   kline_limit: 500
   
   rising_index:

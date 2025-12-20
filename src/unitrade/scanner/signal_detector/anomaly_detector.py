@@ -78,7 +78,7 @@ class AnomalyConfig:
     # Universe selection (liquidity + candidate filter)
     min_quote_volume_24h: float = 0.0   # 24h quoteVolume floor (USDT)
     min_trade_count_24h: int = 0        # 24h trade count floor
-    universe_max_symbols: int = 300     # hard cap even when scan_all=True
+    universe_max_symbols: int = 0       # hard cap even when scan_all=True (0 disables cap)
     universe_preselect_multiplier: int = 3  # prefetch N = top_n * multiplier
     universe_refresh_minutes: int = 60      # 0 disables auto refresh
     min_universe_dwell_minutes: int = 180   # min time to keep a symbol before removal
@@ -87,8 +87,8 @@ class AnomalyConfig:
 
     # Candidate filter (EMA200 proximity on a reference timeframe)
     universe_reference_timeframe: Optional[str] = None  # default: first in timeframes
-    candidate_max_ema200_distance_pct: float = 0.05     # e.g. 0.05 = within 5%
-    candidate_below_ema200_only: bool = True
+    candidate_max_ema200_distance_pct: float = 0.0     # e.g. 0.05 = within 5% (0 disables filter)
+    candidate_below_ema200_only: bool = False
 
     # OI sampling optimization
     oi_symbol_cache_seconds: float = 2.0  # reuse OI across timeframes within this window
@@ -158,15 +158,15 @@ class AnomalyConfig:
             kline_limit=ad.get("kline_limit", 500),
             min_quote_volume_24h=float(ad.get("min_quote_volume_24h", 0.0) or 0.0),
             min_trade_count_24h=int(ad.get("min_trade_count_24h", 0) or 0),
-            universe_max_symbols=int(ad.get("universe_max_symbols", 300) or 300),
+            universe_max_symbols=int(ad.get("universe_max_symbols", 0) or 0),
             universe_preselect_multiplier=int(ad.get("universe_preselect_multiplier", 3) or 3),
             universe_refresh_minutes=int(ad.get("universe_refresh_minutes", 60) or 60),
             min_universe_dwell_minutes=int(ad.get("min_universe_dwell_minutes", 180) or 180),
             universe_max_add_per_refresh=int(ad.get("universe_max_add_per_refresh", 20) or 20),
             universe_max_remove_per_refresh=int(ad.get("universe_max_remove_per_refresh", 20) or 20),
             universe_reference_timeframe=ad.get("universe_reference_timeframe"),
-            candidate_max_ema200_distance_pct=float(ad.get("candidate_max_ema200_distance_pct", 0.05) or 0.05),
-            candidate_below_ema200_only=bool(ad.get("candidate_below_ema200_only", True)),
+            candidate_max_ema200_distance_pct=float(ad.get("candidate_max_ema200_distance_pct", 0.0) or 0.0),
+            candidate_below_ema200_only=bool(ad.get("candidate_below_ema200_only", False)),
             oi_symbol_cache_seconds=float(ad.get("oi_symbol_cache_seconds", 2.0) or 2.0),
             max_streams_per_conn=ad.get("max_streams_per_conn", 200),
             reconnect_delay=ad.get("reconnect_delay", 1.0),
@@ -347,6 +347,9 @@ class AnomalyDetector:
             return str(self.config.universe_reference_timeframe)
         return self.config.timeframes[0] if self.config.timeframes else "15m"
 
+    def _candidate_filter_enabled(self) -> bool:
+        return float(self.config.candidate_max_ema200_distance_pct or 0.0) > 0.0
+
     async def _fetch_24h_tickers(self) -> List[dict]:
         if not self._session:
             return []
@@ -392,14 +395,16 @@ class AnomalyDetector:
         filtered.sort(key=lambda x: (_qv(x), _cnt(x)), reverse=True)
 
         if self.config.scan_all:
-            cap = int(self.config.universe_max_symbols or 300)
-            cap = max(1, cap)
-            filtered = filtered[:cap]
+            cap = int(self.config.universe_max_symbols or 0)
+            if cap > 0:
+                filtered = filtered[:cap]
         else:
             pre_mult = max(1, int(self.config.universe_preselect_multiplier or 1))
-            pre_n = max(int(self.config.top_n or 50), int(self.config.top_n or 50) * pre_mult)
-            cap = max(1, int(self.config.universe_max_symbols or 300))
-            filtered = filtered[: min(pre_n, cap)]
+            top_n = int(self.config.top_n or 50)
+            pre_n = max(top_n, top_n * pre_mult)
+            cap = int(self.config.universe_max_symbols or 0)
+            limit = pre_n if cap <= 0 else min(pre_n, cap)
+            filtered = filtered[:limit]
 
         return [str(t.get("symbol")) for t in filtered if t.get("symbol")]
 
@@ -458,19 +463,27 @@ class AnomalyDetector:
         async with self._universe_lock:
             ranked = await self._discover_ranked_symbols()
 
-            # Prefetch reference timeframe first (to apply EMA200 distance filter)
             tf_ref = self._get_reference_timeframe()
-            to_prefetch_ref = []
-            for s in ranked:
-                if tf_ref not in (self._data_cache.get(s) or {}):
-                    to_prefetch_ref.append(s)
+            filter_enabled = self._candidate_filter_enabled()
+            if filter_enabled:
+                # Prefetch reference timeframe first (to apply EMA200 distance filter)
+                to_prefetch_ref = []
+                for s in ranked:
+                    if tf_ref not in (self._data_cache.get(s) or {}):
+                        to_prefetch_ref.append(s)
 
-            if to_prefetch_ref:
-                await self._prefetch_timeframes_for_symbols(set(to_prefetch_ref), [tf_ref])
+                if to_prefetch_ref:
+                    await self._prefetch_timeframes_for_symbols(set(to_prefetch_ref), [tf_ref])
 
-            filtered = self._filter_symbols_by_ema_candidate(ranked)
+                filtered = self._filter_symbols_by_ema_candidate(ranked)
+            else:
+                filtered = ranked
 
-            target_n = int(self.config.universe_max_symbols or 300) if self.config.scan_all else int(self.config.top_n or 50)
+            if self.config.scan_all:
+                cap = int(self.config.universe_max_symbols or 0)
+                target_n = cap if cap > 0 else len(filtered)
+            else:
+                target_n = int(self.config.top_n or 50)
             target_n = max(1, target_n)
             desired = filtered[:target_n]
             desired_set = set(desired)
@@ -483,9 +496,12 @@ class AnomalyDetector:
                 for s in desired_set:
                     self._symbol_added_at.setdefault(s, now)
                 # Ensure all monitored timeframes are prefetched for selected universe
-                other_tfs = [tf for tf in self.config.timeframes if tf != tf_ref]
-                if other_tfs:
-                    await self._prefetch_timeframes_for_symbols(set(desired_set), other_tfs)
+                if filter_enabled:
+                    other_tfs = [tf for tf in self.config.timeframes if tf != tf_ref]
+                    if other_tfs:
+                        await self._prefetch_timeframes_for_symbols(set(desired_set), other_tfs)
+                else:
+                    await self._prefetch_timeframes_for_symbols(set(desired_set), list(self.config.timeframes))
                 return True
 
             current = set(self._symbols)
@@ -526,9 +542,12 @@ class AnomalyDetector:
 
             # Prefetch missing timeframes for newly added symbols
             if add_candidates:
-                other_tfs = [tf for tf in self.config.timeframes if tf != tf_ref]
-                if other_tfs:
-                    await self._prefetch_timeframes_for_symbols(set(add_candidates), other_tfs)
+                if filter_enabled:
+                    other_tfs = [tf for tf in self.config.timeframes if tf != tf_ref]
+                    if other_tfs:
+                        await self._prefetch_timeframes_for_symbols(set(add_candidates), other_tfs)
+                else:
+                    await self._prefetch_timeframes_for_symbols(set(add_candidates), list(self.config.timeframes))
 
             logger.info(
                 f"Universe updated: {len(current)} -> {len(new_set)} "

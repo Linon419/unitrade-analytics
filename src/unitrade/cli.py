@@ -635,6 +635,8 @@ async def cmd_serve(args):
             from unitrade.scanner.signal_detector import AnomalyDetector, AnomalyConfig
             
             ad_config = AnomalyConfig.from_config(cfg)
+            timeframes = ", ".join(ad_config.timeframes) if ad_config.timeframes else "none"
+            print(f"Anomaly Detector timeframes: {timeframes}")
             anomaly_detector = AnomalyDetector(ad_config)
             await anomaly_detector.start()
             anomaly_task = asyncio.create_task(anomaly_detector.run())
