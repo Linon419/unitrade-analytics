@@ -60,12 +60,12 @@ anomaly_detector:
   timeframes: ["15m", "30m"]
   
   oi_change_threshold: 0.02
-  oi_lookback_bars: 3
+  oi_lookback_bars: 1  # compare previous bar
   ema_period: 200
   require_ema200_breakout: false # allow above-EMA continuation
   rvol_threshold: 3.0
   rvol_lookback: 20
-  net_inflow_ratio_threshold: 0.20  # Net inflow ratio vs quote volume
+  net_inflow_ratio_threshold: 0.05  # Net inflow ratio vs quote volume
   cooldown_seconds: 1800
   
   scan_all: true

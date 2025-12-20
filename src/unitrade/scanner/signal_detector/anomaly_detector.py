@@ -49,7 +49,7 @@ class AnomalyConfig:
     
     # OI 异动阈值
     oi_change_threshold: float = 0.03   # OI 增加 3%
-    oi_lookback_bars: int = 3           # 对比 N 根 K 线前的 OI
+    oi_lookback_bars: int = 1           # 对比 N 根 K 线前的 OI
     
     # EMA 突破
     ema_period: int = 200               # EMA200
@@ -60,7 +60,7 @@ class AnomalyConfig:
     rvol_lookback: int = 20             # 计算平均量的 K 线数
 
     # Net inflow (taker buy - taker sell) ratio vs quote volume
-    net_inflow_ratio_threshold: float = 0.20
+    net_inflow_ratio_threshold: float = 0.05
     
     # 冷却时间 (秒)
     cooldown_seconds: int = 1800        # 30分钟
@@ -119,7 +119,7 @@ class AnomalyConfig:
             redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
             oi_change_threshold=float(os.getenv("OI_CHANGE_THRESHOLD", "0.02")),
             rvol_threshold=float(os.getenv("RVOL_THRESHOLD", "3.0")),
-            net_inflow_ratio_threshold=float(os.getenv("NET_INFLOW_RATIO_THRESHOLD", "0.20")),
+            net_inflow_ratio_threshold=float(os.getenv("NET_INFLOW_RATIO_THRESHOLD", "0.05")),
             require_ema200_breakout=os.getenv("REQUIRE_EMA200_BREAKOUT", "true").lower() not in ("0", "false", "no"),
             cooldown_seconds=int(os.getenv("COOLDOWN_SECONDS", "1800")),
             top_n=int(os.getenv("TOP_N_SYMBOLS", "50")),
@@ -143,12 +143,12 @@ class AnomalyConfig:
             telegram_topic_id=telegram_topic_id,  # topic ID 62
             timeframes=ad.get("timeframes", ["15m", "30m"]),
             oi_change_threshold=ad.get("oi_change_threshold", 0.03),
-            oi_lookback_bars=ad.get("oi_lookback_bars", 3),
+            oi_lookback_bars=ad.get("oi_lookback_bars", 1),
             ema_period=ad.get("ema_period", 200),
             require_ema200_breakout=bool(ad.get("require_ema200_breakout", True)),
             rvol_threshold=ad.get("rvol_threshold", 3.0),
             rvol_lookback=ad.get("rvol_lookback", 20),
-            net_inflow_ratio_threshold=float(ad.get("net_inflow_ratio_threshold", 0.20) or 0.20),
+            net_inflow_ratio_threshold=float(ad.get("net_inflow_ratio_threshold", 0.05) or 0.05),
             cooldown_seconds=ad.get("cooldown_seconds", 1800),
             cooldown_across_timeframes=ad.get("cooldown_across_timeframes", False),
             redis_url=db.get("redis_url") or os.getenv("REDIS_URL", "redis://localhost:6379"),
@@ -945,9 +945,8 @@ class AnomalyDetector:
             if oi_series:
                 current_oi = float(oi_series[-1][1])
                 cache["last_oi"] = current_oi
-                history_vals = [val for _, val in oi_series[:-1]]
-                if len(history_vals) >= int(self.config.oi_lookback_bars):
-                    old_oi = float(sum(history_vals) / len(history_vals))
+                if len(oi_series) >= 2:
+                    old_oi = float(oi_series[-2][1])
                 cache["oi_history"] = [val for _, val in oi_series]
             else:
                 cache["oi_history"] = []
