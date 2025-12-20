@@ -145,15 +145,51 @@ class DataService:
         url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
         async with self._session.get(url) as resp:
             tickers = await resp.json()
-        
-        usdt = [t for t in tickers if t["symbol"].endswith("USDT")]
-        usdt = [t for t in usdt if float(t["quoteVolume"]) > 1e8]
-        
-        gainers = sorted(usdt, key=lambda x: float(x["priceChangePercent"]), reverse=True)[:5]
-        losers = sorted(usdt, key=lambda x: float(x["priceChangePercent"]))[:5]
-        
-        return gainers, losers
-    
+
+        min_quote_volume = 1e8
+        max_symbols = 40
+        lookback = 20
+        intervals = ["15m", "1h"]
+
+        usdt = [t for t in tickers if t.get("symbol", "").endswith("USDT")]
+        usdt = [t for t in usdt if float(t.get("quoteVolume", 0)) > min_quote_volume]
+        usdt.sort(key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
+        symbols = [t["symbol"] for t in usdt[:max_symbols]]
+
+        semaphore = asyncio.Semaphore(8)
+
+        async def fetch_rvol(symbol: str, interval: str):
+            params = {"symbol": symbol, "interval": interval, "limit": lookback + 1}
+            url = "https://fapi.binance.com/fapi/v1/klines"
+            async with semaphore:
+                async with self._session.get(url, params=params) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
+            if len(data) < lookback + 1:
+                return None
+            vols = [float(k[7]) for k in data]
+            last = vols[-1]
+            avg = sum(vols[:-1]) / len(vols[:-1]) if vols[:-1] else 0.0
+            rvol = last / avg if avg > 0 else 0.0
+            return {"symbol": symbol, "interval": interval, "rvol": rvol, "quote_volume": last}
+
+        tasks = [fetch_rvol(sym, interval) for sym in symbols for interval in intervals]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        top_15m = []
+        top_1h = []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            if item.get("interval") == "15m":
+                top_15m.append(item)
+            else:
+                top_1h.append(item)
+
+        top_15m.sort(key=lambda x: x["rvol"], reverse=True)
+        top_1h.sort(key=lambda x: x["rvol"], reverse=True)
+        return top_15m[:5], top_1h[:5]
     async def get_oi_history(self, symbol: str, limit: int = 12):
         url = "https://fapi.binance.com/futures/data/openInterestHist"
         params = {"symbol": symbol, "period": "1h", "limit": limit}
@@ -546,36 +582,43 @@ async def generate_longshort_analysis(symbol: str) -> str:
 
 
 async def generate_hot_coins() -> str:
-    """生成热币列表文本"""
+    """Generate hot coins text (volume spikes)."""
     try:
-        gainers, losers = await data_service.get_hot_coins()
-        
+        top_15m, top_1h = await data_service.get_hot_coins()
+
         lines = [
-            "<b>🔥 热币列表</b>",
-            f"⏰ {datetime.now().strftime('%m-%d %H:%M')}",
+            "<b>Hot Coins - Volume Spikes</b>",
+            f"{datetime.now().strftime('%m-%d %H:%M')}",
             "",
-            "<b>📈 涨幅榜:</b>",
+            "<b>15m RVOL Top</b>",
         ]
-        
-        for t in gainers:
-            symbol = t["symbol"].replace("USDT", "")
-            change = float(t["priceChangePercent"])
-            lines.append(f"  {symbol}: {change:+.2f}%")
-        
+
+        if not top_15m:
+            lines.append("  (no data)")
+        else:
+            for item in top_15m:
+                symbol = item["symbol"].replace("USDT", "")
+                rvol = item.get("rvol", 0.0)
+                qv = format_flow(item.get("quote_volume", 0.0))
+                lines.append(f"  {symbol}: {rvol:.2f}x qv={qv}")
+
         lines.append("")
-        lines.append("<b>📉 跌幅榜:</b>")
-        
-        for t in losers:
-            symbol = t["symbol"].replace("USDT", "")
-            change = float(t["priceChangePercent"])
-            lines.append(f"  {symbol}: {change:+.2f}%")
-        
+        lines.append("<b>1h RVOL Top</b>")
+
+        if not top_1h:
+            lines.append("  (no data)")
+        else:
+            for item in top_1h:
+                symbol = item["symbol"].replace("USDT", "")
+                rvol = item.get("rvol", 0.0)
+                qv = format_flow(item.get("quote_volume", 0.0))
+                lines.append(f"  {symbol}: {rvol:.2f}x qv={qv}")
+
         return "\n".join(lines)
-        
+
     except Exception as e:
         logger.error(f"Hot coins error: {e}")
-        return f"❌ 热币列表错误: {e}"
-
+        return f"Hot coins error: {e}"
 
 async def generate_rising_index() -> str:
     """生成上涨潜力排行文本"""

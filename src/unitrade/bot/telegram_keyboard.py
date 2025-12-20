@@ -376,50 +376,93 @@ class UniTradeBotHandler:
     # ========== 热币列表 ==========
     
     async def send_hot_coins(self, topic_id: Optional[int] = None) -> Optional[Dict]:
-        """发送热币列表"""
+        """Send hot coins list (volume spikes)."""
         try:
             url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
             async with self._session.get(url) as resp:
                 if resp.status != 200:
-                    return await self.send_menu("❌ 获取数据失败", UniTradeMenus.main_menu(), topic_id)
+                    return await self.send_menu("Failed to fetch data", UniTradeMenus.main_menu(), topic_id)
                 tickers = await resp.json()
-            
-            usdt = [t for t in tickers if t["symbol"].endswith("USDT")]
-            usdt = [t for t in usdt if float(t["quoteVolume"]) > 1e8]
-            
-            gainers = sorted(usdt, key=lambda x: float(x["priceChangePercent"]), reverse=True)[:5]
-            losers = sorted(usdt, key=lambda x: float(x["priceChangePercent"]))[:5]
-            
+
+            min_quote_volume = 1e8
+            max_symbols = 40
+            lookback = 20
+            intervals = ["15m", "1h"]
+
+            usdt = [t for t in tickers if t.get("symbol", "").endswith("USDT")]
+            usdt = [t for t in usdt if float(t.get("quoteVolume", 0)) > min_quote_volume]
+            usdt.sort(key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
+            symbols = [t["symbol"] for t in usdt[:max_symbols]]
+
+            semaphore = asyncio.Semaphore(8)
+
+            async def fetch_rvol(symbol: str, interval: str):
+                params = {"symbol": symbol, "interval": interval, "limit": lookback + 1}
+                url = "https://fapi.binance.com/fapi/v1/klines"
+                async with semaphore:
+                    async with self._session.get(url, params=params) as resp:
+                        if resp.status != 200:
+                            return None
+                        data = await resp.json()
+                if len(data) < lookback + 1:
+                    return None
+                vols = [float(k[7]) for k in data]
+                last = vols[-1]
+                avg = sum(vols[:-1]) / len(vols[:-1]) if vols[:-1] else 0.0
+                rvol = last / avg if avg > 0 else 0.0
+                return {"symbol": symbol, "interval": interval, "rvol": rvol, "quote_volume": last}
+
+            tasks = [fetch_rvol(sym, interval) for sym in symbols for interval in intervals]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            top_15m = []
+            top_1h = []
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("interval") == "15m":
+                    top_15m.append(item)
+                else:
+                    top_1h.append(item)
+
+            top_15m.sort(key=lambda x: x["rvol"], reverse=True)
+            top_1h.sort(key=lambda x: x["rvol"], reverse=True)
+
             lines = [
-                "<b>🔥 热币列表</b>",
-                f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                "━" * 20,
+                "<b>Hot Coins - Volume Spikes</b>",
+                f"{datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                "-" * 20,
                 "",
-                "<b>📈 涨幅榜:</b>",
+                "<b>15m RVOL Top</b>",
             ]
-            
-            for t in gainers:
-                symbol = t["symbol"].replace("USDT", "")
-                change = float(t["priceChangePercent"])
-                lines.append(f"  {symbol}: {change:+.2f}%")
-            
+
+            if not top_15m:
+                lines.append("  (no data)")
+            else:
+                for item in top_15m[:5]:
+                    symbol = item["symbol"].replace("USDT", "")
+                    rvol = item.get("rvol", 0.0)
+                    qv = format_flow(item.get("quote_volume", 0.0))
+                    lines.append(f"  {symbol}: {rvol:.2f}x qv={qv}")
+
             lines.append("")
-            lines.append("<b>📉 跌幅榜:</b>")
-            
-            for t in losers:
-                symbol = t["symbol"].replace("USDT", "")
-                change = float(t["priceChangePercent"])
-                lines.append(f"  {symbol}: {change:+.2f}%")
-            
+            lines.append("<b>1h RVOL Top</b>")
+
+            if not top_1h:
+                lines.append("  (no data)")
+            else:
+                for item in top_1h[:5]:
+                    symbol = item["symbol"].replace("USDT", "")
+                    rvol = item.get("rvol", 0.0)
+                    qv = format_flow(item.get("quote_volume", 0.0))
+                    lines.append(f"  {symbol}: {rvol:.2f}x qv={qv}")
+
             text = "\n".join(lines)
             return await self.send_menu(text, UniTradeMenus.main_menu(), topic_id)
-            
+
         except Exception as e:
             logger.error(f"Hot coins error: {e}")
-            return await self.send_menu(f"❌ 热币列表错误: {e}", UniTradeMenus.main_menu(), topic_id)
-    
-    # ========== 机构散户分析 (真实区分) ==========
-    
+            return await self.send_menu(f"Hot coins error: {e}", UniTradeMenus.main_menu(), topic_id)
     async def send_institution_analysis(self, symbol: str = "BTCUSDT", topic_id: Optional[int] = None) -> Optional[Dict]:
         """发送机构 vs 散户分析 - 使用 Binance 大户 API + 订单大小分析"""
         try:
