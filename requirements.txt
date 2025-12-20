@@ -9,7 +9,7 @@ redis>=5.0.0
 # Math / indicators
 numpy>=1.26.0
 pandas>=2.1.0
-pandas-ta @ https://github.com/twopirllc/pandas-ta/archive/refs/tags/v0.3.14b0.tar.gz
+pandas-ta==0.4.71b0
 
 # Data structures
 sortedcontainers>=2.4.0
