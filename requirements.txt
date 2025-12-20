@@ -20,6 +20,4 @@ pyyaml>=6.0
 # Prometheus metrics
 prometheus-client>=0.19.0
 
-# WebSocket helper (optional)
-unicorn-binance-websocket-api>=1.50.0
 
