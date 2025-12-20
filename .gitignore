@@ -58,3 +58,6 @@ api_response.json
 *_api_response.json
 report_output.json
 updates.json
+
+# Local reports
+reports/
