@@ -53,10 +53,14 @@ class AnomalyConfig:
     
     # EMA 突破
     ema_period: int = 200               # EMA200
+    require_ema200_breakout: bool = True  # True: only cross-up; False: allow above-EMA
     
     # 量能异动阈值
     rvol_threshold: float = 3.0         # 放量倍数 3x
     rvol_lookback: int = 20             # 计算平均量的 K 线数
+
+    # Net inflow (taker buy - taker sell) ratio vs quote volume
+    net_inflow_ratio_threshold: float = 0.20
     
     # 冷却时间 (秒)
     cooldown_seconds: int = 1800        # 30分钟
@@ -113,8 +117,10 @@ class AnomalyConfig:
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
             redis_url=os.getenv("REDIS_URL", "redis://localhost:6379"),
-            oi_change_threshold=float(os.getenv("OI_CHANGE_THRESHOLD", "0.03")),
+            oi_change_threshold=float(os.getenv("OI_CHANGE_THRESHOLD", "0.02")),
             rvol_threshold=float(os.getenv("RVOL_THRESHOLD", "3.0")),
+            net_inflow_ratio_threshold=float(os.getenv("NET_INFLOW_RATIO_THRESHOLD", "0.20")),
+            require_ema200_breakout=os.getenv("REQUIRE_EMA200_BREAKOUT", "true").lower() not in ("0", "false", "no"),
             cooldown_seconds=int(os.getenv("COOLDOWN_SECONDS", "1800")),
             top_n=int(os.getenv("TOP_N_SYMBOLS", "50")),
         )
@@ -139,8 +145,10 @@ class AnomalyConfig:
             oi_change_threshold=ad.get("oi_change_threshold", 0.03),
             oi_lookback_bars=ad.get("oi_lookback_bars", 3),
             ema_period=ad.get("ema_period", 200),
+            require_ema200_breakout=bool(ad.get("require_ema200_breakout", True)),
             rvol_threshold=ad.get("rvol_threshold", 3.0),
             rvol_lookback=ad.get("rvol_lookback", 20),
+            net_inflow_ratio_threshold=float(ad.get("net_inflow_ratio_threshold", 0.20) or 0.20),
             cooldown_seconds=ad.get("cooldown_seconds", 1800),
             cooldown_across_timeframes=ad.get("cooldown_across_timeframes", False),
             redis_url=db.get("redis_url") or os.getenv("REDIS_URL", "redis://localhost:6379"),
@@ -181,6 +189,8 @@ class BreakoutSignal:
     ema200: float
     oi_change_pct: float    # OI 变化百分比
     rvol: float             # 放量倍数
+    net_inflow: float       # Net inflow (USDT)
+    net_inflow_ratio: float # Net inflow ratio vs quote volume
     timestamp: str = ""
     
     def format_message(self) -> str:
@@ -195,13 +205,18 @@ class BreakoutSignal:
         else:
             price_str = f"{self.price:.6f}"
         
+        net_sign = "+" if self.net_inflow >= 0 else ""
+        net_flow_str = f"{net_sign}{self.net_inflow:,.0f}"
+        net_ratio_str = f"{self.net_inflow_ratio:.0%}"
+
         msg = f"""🚀 *#{symbol_clean}* 突破信号 ({self.timeframe})
 
 📈 突破 EMA200
 💰 现价: `{price_str}`
 📊 EMA200: `{self.ema200:.6f}`
 🔥 OI 变化: `+{self.oi_change_pct:.2%}`
-🌊 量能: `{self.rvol:.1f}x`"""
+🌊 量能: `{self.rvol:.1f}x`
+Net inflow: `{net_flow_str}` ({net_ratio_str})"""
         
         return msg
 
@@ -249,6 +264,7 @@ class AnomalyDetector:
 
         # OI short TTL cache (symbol-level)
         self._oi_value_cache: Dict[str, Tuple[float, float]] = {}
+        self._oi_hist_cache: Dict[Tuple[str, str], Dict[str, List[Tuple[int, float]]]] = {}
         
         # 内存缓存: symbol -> {timeframe -> {closes: [], volumes: [], oi_history: []}}
         self._data_cache: Dict[str, Dict[str, Dict]] = {}
@@ -582,7 +598,7 @@ class AnomalyDetector:
                     klines = await resp.json()
                 
                 closes = [float(k[4]) for k in klines]
-                volumes = [float(k[5]) for k in klines]
+                volumes = [float(k[7]) for k in klines]
                 
                 # OI history is warmed up from live sampling to avoid cold-start false positives
                 
@@ -608,6 +624,101 @@ class AnomalyDetector:
             # 请求延迟 (100ms) 避免触发 rate limit
             await asyncio.sleep(0.1)
     
+    def _timeframe_to_ms(self, timeframe: str) -> int:
+        try:
+            if timeframe.endswith("m"):
+                return int(timeframe[:-1]) * 60 * 1000
+            if timeframe.endswith("h"):
+                return int(timeframe[:-1]) * 60 * 60 * 1000
+            if timeframe.endswith("d"):
+                return int(timeframe[:-1]) * 24 * 60 * 60 * 1000
+        except ValueError:
+            return 0
+        return 0
+
+    @staticmethod
+    def _parse_oi_value(item: dict) -> Optional[float]:
+        for key in ("sumOpenInterest", "openInterest", "sumOpenInterestValue", "openInterestValue"):
+            if key in item:
+                try:
+                    return float(item[key])
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    async def _fetch_oi_history(
+        self,
+        symbol: str,
+        timeframe: str,
+        end_time_ms: int,
+        bars: int,
+    ) -> List[Tuple[int, float]]:
+        if not self._session or not self._oi_semaphore:
+            return []
+
+        interval_ms = self._timeframe_to_ms(timeframe)
+        if interval_ms <= 0 or end_time_ms <= 0:
+            return []
+
+        cache_key = (symbol, timeframe)
+        cached = self._oi_hist_cache.get(cache_key)
+        if cached:
+            items = cached.get("items", [])
+            if items:
+                items = sorted(items, key=lambda x: x[0])
+                last_ts = items[-1][0]
+                if last_ts >= end_time_ms - interval_ms:
+                    filtered = [item for item in items if item[0] <= end_time_ms]
+                    if len(filtered) >= bars:
+                        return filtered[-bars:]
+
+        url = "https://fapi.binance.com/futures/data/openInterestHist"
+        start_time_ms = end_time_ms - interval_ms * (bars + 2)
+        params = {
+            "symbol": symbol,
+            "period": timeframe,
+            "startTime": start_time_ms,
+            "endTime": end_time_ms,
+            "limit": 500,
+        }
+
+        delay = float(self.config.oi_retry_base_delay)
+        for attempt in range(1, int(self.config.oi_max_retries) + 1):
+            try:
+                async with self._oi_semaphore:
+                    async with self._session.get(url, params=params) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            items = []
+                            for item in data:
+                                ts = int(item.get("timestamp", 0))
+                                val = self._parse_oi_value(item)
+                                if ts and val is not None:
+                                    items.append((ts, float(val)))
+                            items.sort(key=lambda x: x[0])
+                            if items:
+                                self._oi_hist_cache[cache_key] = {"items": items}
+                            filtered = [item for item in items if item[0] <= end_time_ms]
+                            return filtered[-bars:] if len(filtered) >= bars else filtered
+
+                        if resp.status in (418, 429):
+                            retry_after = resp.headers.get("Retry-After")
+                            logger.warning(
+                                f"OI hist rate limited for {symbol} {timeframe} (status={resp.status}, retry_after={retry_after})"
+                            )
+                        else:
+                            logger.debug(
+                                f"OI hist non-200 for {symbol} {timeframe}: {resp.status} {await resp.text()}"
+                            )
+            except Exception as e:
+                logger.debug(f"OI hist fetch error for {symbol} {timeframe} (attempt={attempt}): {e}")
+
+            jitter = random.random() * 0.2 * delay
+            await asyncio.sleep(min(delay + jitter, self.config.oi_retry_max_delay))
+            delay = min(delay * 2, self.config.oi_retry_max_delay)
+
+        return []
+
     async def _fetch_oi(self, symbol: str) -> Optional[float]:
         """获取当前 OI (带并发限制 + 重试). 失败返回 None"""
         url = "https://fapi.binance.com/fapi/v1/openInterest"
@@ -798,7 +909,11 @@ class AnomalyDetector:
 
         async with lock:
             close_price = float(kline.get("c", 0))
-            volume = float(kline.get("v", 0))
+            volume = float(kline.get("q", 0))
+            quote_volume = volume
+            taker_buy_quote = float(kline.get("Q", 0))
+            net_inflow = (2 * taker_buy_quote) - quote_volume
+            net_inflow_ratio = net_inflow / quote_volume if quote_volume > 0 else 0.0
             close_ts_ms = kline.get("T")
             cache["last_close_ts_ms"] = int(close_ts_ms) if isinstance(close_ts_ms, int) else None
 
@@ -817,39 +932,34 @@ class AnomalyDetector:
             if len(cache["volumes"]) > self.config.kline_limit:
                 cache["volumes"] = cache["volumes"][-self.config.kline_limit:]
 
-            current_oi = await self._fetch_oi(symbol)
-            if current_oi is None:
-                return
-
-            cache["last_oi"] = current_oi
-
-            oi_hist = cache.get("oi_history")
-            if not isinstance(oi_hist, list):
-                oi_hist = []
-
-            oi_hist.append(float(current_oi))
-            max_len = int(self.config.oi_lookback_bars) + 1
-            if max_len < 2:
-                max_len = 2
-
-            if len(oi_hist) > max_len:
-                oi_hist = oi_hist[-max_len:]
-            cache["oi_history"] = oi_hist
-
-            # Cold-start protection: wait until we have enough history
-            warmup_remaining = int(cache.get("oi_warmup_remaining", self.config.oi_lookback_bars) or 0)
-            cache["oi_warmup_remaining"] = max(0, warmup_remaining - 1)
-            if len(oi_hist) < max_len:
-                return
-
-            old_oi = float(oi_hist[0])
-
+            oi_bars = max(2, int(self.config.oi_lookback_bars) + 1)
+            oi_series = await self._fetch_oi_history(
+                symbol,
+                timeframe,
+                int(cache.get("last_close_ts_ms") or 0),
+                oi_bars,
+            )
+            
+            current_oi = 0.0
+            old_oi = 0.0
+            if oi_series:
+                current_oi = float(oi_series[-1][1])
+                cache["last_oi"] = current_oi
+                history_vals = [val for _, val in oi_series[:-1]]
+                if len(history_vals) >= int(self.config.oi_lookback_bars):
+                    old_oi = float(sum(history_vals) / len(history_vals))
+                cache["oi_history"] = [val for _, val in oi_series]
+            else:
+                cache["oi_history"] = []
+            
             await self._detect_breakout(
                 symbol,
                 timeframe,
                 close_price,
                 prev_close,
                 volume,
+                net_inflow,
+                net_inflow_ratio,
                 float(current_oi),
                 float(old_oi),
                 cache,
@@ -858,11 +968,11 @@ class AnomalyDetector:
     async def _detect_breakout(
         self, symbol: str, timeframe: str,
         close_price: float, prev_close: float,
-        volume: float, current_oi: float, old_oi: float,
+        volume: float, net_inflow: float, net_inflow_ratio: float,
+        current_oi: float, old_oi: float,
         cache: Dict
     ) -> None:
-        """检测突破信号 (三条件 AND)"""
-        
+        """Detect breakout (EMA + any 2/3)"""
         # 1. 检查: 价格向上突破 EMA200 (更严格：用上一根 EMA 与当前 EMA)
         ema_prev = cache.get("ema200_prev")
         ema_curr = cache.get("ema200") or self._calc_ema(cache["closes"], self.config.ema_period)
@@ -870,16 +980,15 @@ class AnomalyDetector:
             ema_prev = ema_curr
 
         broke_ema200_up = (prev_close < float(ema_prev)) and (close_price > float(ema_curr))
-        
-        if not broke_ema200_up:
-            return  # 未突破, 不继续检测
+        above_ema200 = (prev_close >= float(ema_prev)) and (close_price >= float(ema_curr))
+        ema_ok = broke_ema200_up if self.config.require_ema200_breakout else (broke_ema200_up or above_ema200)
+        if not ema_ok:
+            return
         
         # 3. 检查: OI 增加 ≥ 阈值
         oi_change_pct = (current_oi - old_oi) / old_oi if old_oi > 0 else 0
         oi_spike = oi_change_pct >= self.config.oi_change_threshold
         
-        if not oi_spike:
-            return
         
         # 4. 检查: 量能放大
         if len(cache["volumes"]) < self.config.rvol_lookback + 1:
@@ -889,9 +998,23 @@ class AnomalyDetector:
         avg_volume = sum(recent_volumes) / len(recent_volumes) if recent_volumes else 0
         rvol = volume / avg_volume if avg_volume > 0 else 0
         volume_spike = rvol >= self.config.rvol_threshold
-        
-        if not volume_spike:
+
+        # 4. Net inflow (normalized by quote volume)
+        net_inflow_spike = net_inflow_ratio >= self.config.net_inflow_ratio_threshold
+
+        # After EMA condition, require any 2 of OI/volume/net inflow
+        conditions_met = sum([oi_spike, volume_spike, net_inflow_spike])
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"{symbol} {timeframe} ema_ok={ema_ok} "
+                f"oi_change={oi_change_pct:.2%} oi_spike={oi_spike} "
+                f"rvol={rvol:.2f} volume_spike={volume_spike} "
+                f"net_ratio={net_inflow_ratio:.2%} net_spike={net_inflow_spike} "
+                f"conds={conditions_met}"
+            )
+        if conditions_met < 2:
             return
+        
         
         # 所有条件满足! 触发信号
         signal = BreakoutSignal(
@@ -901,6 +1024,8 @@ class AnomalyDetector:
             ema200=float(ema_curr),
             oi_change_pct=oi_change_pct,
             rvol=rvol,
+            net_inflow=net_inflow,
+            net_inflow_ratio=net_inflow_ratio,
             timestamp=(
                 datetime.fromtimestamp(cache.get("last_close_ts_ms", 0) / 1000, tz=timezone.utc).isoformat()
                 if cache.get("last_close_ts_ms")
@@ -1341,15 +1466,15 @@ async def main():
     print(f"📈 EMA Period: {config.ema_period}")
     print(f"🔥 OI Threshold: +{config.oi_change_threshold:.0%}")
     print(f"🌊 RVol Threshold: {config.rvol_threshold}x")
+    print(f"Net Inflow Ratio Threshold: {config.net_inflow_ratio_threshold:.0%}")
     print(f"⏱️ Cooldown: {config.cooldown_seconds // 60} minutes")
     print(f"📱 Telegram: {'✅' if config.telegram_bot_token else '❌'}")
     print(f"🔴 Redis: {config.redis_url}")
     print("=" * 60)
     print()
     print("Conditions for signal:")
-    print("  1. Price breaks above EMA200")
-    print("  2. OI increases ≥ 3%")
-    print("  3. Volume ≥ 3x average")
+    print("  1. Price breaks above EMA200 (or above-EMA if allowed)")
+    print("  2. Any 2 of: OI increase, volume spike, net inflow")
     print()
     
     await run_anomaly_detector(config)
