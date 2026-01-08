@@ -8,14 +8,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
+from datetime import datetime
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import aiohttp
 import numpy as np
 
 from .redis_state import RedisStateManager
+from unitrade.core.time import format_ts, resolve_tz
 
 if TYPE_CHECKING:
     from .anomaly_detector import BreakoutSignal
@@ -45,6 +48,13 @@ class RisingIndexConfig:
     # EMA 周期
     ema_periods: List[int] = field(default_factory=lambda: [21, 55, 100, 200])
 
+    # Trend component (ported from nofx/analysis/trend/trend.go)
+    # Blended into price_structure_score:
+    # price_score = (1 - trend_mix_weight) * old_price_score + trend_mix_weight * trend_score
+    trend_mix_weight: float = 0.2
+    trend_angle_cap_deg: float = 0.6
+    trend_dev_cap_pct: float = 3.0
+
 
 @dataclass
 class RisingScore:
@@ -60,6 +70,10 @@ class RisingScore:
     cumulative_oi_change: float
     price_change_5d: float
     ema_alignment: str  # 'bullish', 'bearish', 'neutral'
+    current_price: float = 0.0
+    first_ranked_ts: Optional[float] = None
+    first_ranked_price: Optional[float] = None
+    price_change_since_rank: Optional[float] = None
 
     def format_text(self, rank: int) -> str:
         """格式化为文本"""
@@ -126,7 +140,26 @@ class RisingIndex:
                 scores.append(score)
 
         scores.sort(key=lambda x: x.total_score, reverse=True)
-        return scores[:top_n]
+        top = scores[:top_n]
+        await self._enrich_first_ranked(top)
+        return top
+
+    async def _enrich_first_ranked(self, scores: List[RisingScore]) -> None:
+        if not scores or not self._state_manager:
+            return
+
+        now = time.time()
+        for s in scores:
+            ts, price = await self._state_manager.get_or_set_first_ranked(
+                symbol=s.symbol,
+                ts=now,
+                price=float(s.current_price or 0.0),
+                prefix=self.config.redis_prefix,
+            )
+            s.first_ranked_ts = float(ts)
+            s.first_ranked_price = float(price)
+            if price and s.current_price:
+                s.price_change_since_rank = (float(s.current_price) - float(price)) / float(price)
 
     async def _calc_symbol_score(self, symbol: str) -> Optional[RisingScore]:
         """计算单个币种的上涨指数"""
@@ -171,7 +204,7 @@ class RisingIndex:
         avg_rvol = sum(rvols) / len(rvols) if rvols else 0.0
         volume_score = self._normalize(avg_rvol, 1, 10)
 
-        price_score, ema_alignment, price_change = await self._calc_price_structure(
+        price_score, ema_alignment, price_change, current_price = await self._calc_price_structure(
             symbol, prices[-1] if prices else 0.0, ema200s[-1] if ema200s else 0.0
         )
 
@@ -193,11 +226,12 @@ class RisingIndex:
             cumulative_oi_change=cumulative_oi,
             price_change_5d=price_change,
             ema_alignment=ema_alignment,
+            current_price=current_price,
         )
 
     async def _calc_price_structure(
         self, symbol: str, last_signal_price: float, last_ema200: float
-    ) -> tuple[float, str, float]:
+    ) -> tuple[float, str, float, float]:
         """计算价格结构得分"""
         try:
             url = "https://fapi.binance.com/fapi/v1/klines"
@@ -205,7 +239,7 @@ class RisingIndex:
 
             async with self._session.get(url, params=params) as resp:
                 if resp.status != 200:
-                    return 0.5, "neutral", 0.0
+                    return 0.5, "neutral", 0.0, float(last_signal_price)
                 klines = await resp.json()
 
             closes = [float(k[4]) for k in klines]
@@ -240,17 +274,84 @@ class RisingIndex:
             else:
                 price_change = 0.0
 
-            price_score = (
+            price_score_old = (
                 0.30 * hl_score
                 + 0.30 * alignment_score
                 + 0.25 * distance_score
                 + 0.15 * self._normalize(price_change, -0.1, 0.3)
             )
 
-            return float(price_score), ema_alignment, float(price_change)
+            trend_score = self._calc_trend_score(closes)
+            if trend_score is None:
+                price_score = float(price_score_old)
+            else:
+                w = max(0.0, min(1.0, float(self.config.trend_mix_weight or 0.0)))
+                price_score = float((1.0 - w) * price_score_old + w * trend_score)
+
+            return float(price_score), ema_alignment, float(price_change), float(current_price)
         except Exception as e:
             logger.debug(f"Error calculating price structure for {symbol}: {e}")
-            return 0.5, "neutral", 0.0
+            return 0.5, "neutral", 0.0, float(last_signal_price)
+
+    def _fit_line(self, series: List[float]) -> Tuple[float, float]:
+        """Simple linear regression on y=series, x=[0..n-1]. Returns (slope, intercept)."""
+        if not series:
+            return 0.0, 0.0
+
+        n = float(len(series))
+        sum_x = sum_y = sum_xy = sum_xx = 0.0
+        for i, y in enumerate(series):
+            x = float(i)
+            y = float(y)
+            sum_x += x
+            sum_y += y
+            sum_xy += x * y
+            sum_xx += x * x
+
+        denom = n * sum_xx - sum_x * sum_x
+        if denom == 0.0:
+            return 0.0, float(series[-1])
+
+        slope = (n * sum_xy - sum_x * sum_y) / denom
+        intercept = (sum_y - slope * sum_x) / n
+        return float(slope), float(intercept)
+
+    def _calc_trend_score(self, closes: List[float]) -> Optional[float]:
+        """
+        Trend score ported from nofx/analysis/trend/trend.go.
+
+        Uses normalized close series (close/close[0]) for cross-symbol comparability.
+        Returns [0,1], where higher means stronger upward trend with limited baseline deviation.
+        """
+        if len(closes) < 5:
+            return None
+
+        base = float(closes[0])
+        if base <= 0.0:
+            return None
+
+        normalized = [float(c) / base for c in closes]
+        slope, intercept = self._fit_line(normalized)
+
+        angle_deg = math.degrees(math.atan(slope))
+        if angle_deg <= 0.0:
+            trend_strength = 0.0
+        else:
+            cap = float(self.config.trend_angle_cap_deg or 0.6)
+            cap = max(1e-9, cap)
+            trend_strength = self._normalize(angle_deg, 0.0, cap)
+
+        baseline = intercept + slope * float(len(normalized) - 1)
+        if baseline != 0.0:
+            deviation_pct = (normalized[-1] - baseline) / baseline * 100.0
+        else:
+            deviation_pct = 0.0
+
+        dev_cap = float(self.config.trend_dev_cap_pct or 3.0)
+        dev_cap = max(1e-9, dev_cap)
+        deviation_penalty = 1.0 - self._normalize(abs(deviation_pct), 0.0, dev_cap)
+
+        return max(0.0, min(1.0, trend_strength * deviation_penalty))
 
     def _calc_ema(self, closes: List[float], period: int) -> float:
         """计算 EMA"""
@@ -273,15 +374,52 @@ class RisingIndex:
 
     def format_ranking(self, scores: List[RisingScore]) -> str:
         """格式化排行榜"""
-        lines = ["?? *上涨潜力排行 (5日评估)*", "━" * 25]
-        for i, score in enumerate(scores, 1):
-            lines.append(score.format_text(i))
+        tz = resolve_tz()
+        now_str = datetime.now(tz=tz).strftime("%m-%d %H:%M %Z")
+
+        lines = ["🏆 *上涨潜力排行 (5日评估)*", f"⏰ {now_str}", "━" * 25]
+        for i, s in enumerate(scores, 1):
+            base = s.symbol.replace("USDT", "")
+            since = f"{s.price_change_since_rank:+.1%}" if s.price_change_since_rank is not None else "n/a"
+            first = format_ts(s.first_ranked_ts, "%m-%d %H:%M") if s.first_ranked_ts else "-"
+
+            lines.append(f"{i}. *{base}* ⚡{s.total_score:.1f}  ({since})")
+            lines.append(
+                f"   价{s.price_structure_score:.1f} 资{s.oi_flow_score:.1f} 新{s.recency_score:.1f} 量{s.volume_score:.1f} | 首上榜{first}"
+            )
         return "\n".join(lines)
+
+
+def _load_rising_index_overrides() -> Dict:
+    """
+    Load `anomaly_detector.rising_index` from global config if available.
+
+    This keeps the ranking weights and trend mix tunable via `config/default.yaml`
+    (or `UNITRADE_CONFIG`) while remaining backward-compatible.
+    """
+    try:
+        from unitrade.core.config import load_config
+
+        conf = load_config()
+        ad = getattr(conf, "anomaly_detector", None) or {}
+        if not isinstance(ad, dict):
+            return {}
+        ri = ad.get("rising_index") or {}
+        return ri if isinstance(ri, dict) else {}
+    except Exception:
+        return {}
+
+
+def _build_rising_index_config(redis_url: str) -> RisingIndexConfig:
+    overrides = _load_rising_index_overrides()
+    allowed = set(RisingIndexConfig.__dataclass_fields__.keys())
+    kwargs = {k: v for k, v in overrides.items() if k in allowed and k != "redis_url"}
+    return RisingIndexConfig(redis_url=redis_url, **kwargs)
 
 
 async def get_rising_ranking(redis_url: str = "redis://localhost:6379", top_n: int = 20) -> List[RisingScore]:
     """便捷方法: 获取上涨指数排行"""
-    config = RisingIndexConfig(redis_url=redis_url)
+    config = _build_rising_index_config(redis_url=redis_url)
     index = RisingIndex(config)
     await index.connect()
     try:
@@ -305,7 +443,7 @@ async def scheduled_ranking_push(
 
     async def push_ranking() -> None:
         try:
-            config = RisingIndexConfig(redis_url=redis_url)
+            config = _build_rising_index_config(redis_url=redis_url)
             index = RisingIndex(config)
             await index.connect()
 
@@ -333,4 +471,3 @@ async def scheduled_ranking_push(
     while True:
         await push_ranking()
         await asyncio.sleep(interval_hours * 3600)
-

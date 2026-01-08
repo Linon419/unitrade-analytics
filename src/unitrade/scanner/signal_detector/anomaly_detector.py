@@ -61,6 +61,11 @@ class AnomalyConfig:
 
     # Net inflow (taker buy - taker sell) ratio vs quote volume
     net_inflow_ratio_threshold: float = 0.05
+
+    # Price growth condition (used as an extra trigger factor after EMA condition)
+    price_growth_lookback_bars: int = 8
+    price_growth_min_gain_pct: float = 0.002  # 0.2%
+    price_growth_require_above_ema200: bool = True
     
     # 冷却时间 (秒)
     cooldown_seconds: int = 1800        # 30分钟
@@ -120,6 +125,9 @@ class AnomalyConfig:
             oi_change_threshold=float(os.getenv("OI_CHANGE_THRESHOLD", "0.02")),
             rvol_threshold=float(os.getenv("RVOL_THRESHOLD", "3.0")),
             net_inflow_ratio_threshold=float(os.getenv("NET_INFLOW_RATIO_THRESHOLD", "0.05")),
+            price_growth_lookback_bars=int(os.getenv("PRICE_GROWTH_LOOKBACK_BARS", "8")),
+            price_growth_min_gain_pct=float(os.getenv("PRICE_GROWTH_MIN_GAIN_PCT", "0.002")),
+            price_growth_require_above_ema200=os.getenv("PRICE_GROWTH_REQUIRE_ABOVE_EMA200", "true").lower() not in ("0", "false", "no"),
             require_ema200_breakout=os.getenv("REQUIRE_EMA200_BREAKOUT", "true").lower() not in ("0", "false", "no"),
             cooldown_seconds=int(os.getenv("COOLDOWN_SECONDS", "1800")),
             top_n=int(os.getenv("TOP_N_SYMBOLS", "50")),
@@ -149,6 +157,9 @@ class AnomalyConfig:
             rvol_threshold=ad.get("rvol_threshold", 3.0),
             rvol_lookback=ad.get("rvol_lookback", 20),
             net_inflow_ratio_threshold=float(ad.get("net_inflow_ratio_threshold", 0.05) or 0.05),
+            price_growth_lookback_bars=int(ad.get("price_growth_lookback_bars", 8) or 8),
+            price_growth_min_gain_pct=float(ad.get("price_growth_min_gain_pct", 0.002) or 0.002),
+            price_growth_require_above_ema200=bool(ad.get("price_growth_require_above_ema200", True)),
             cooldown_seconds=ad.get("cooldown_seconds", 1800),
             cooldown_across_timeframes=ad.get("cooldown_across_timeframes", False),
             redis_url=db.get("redis_url") or os.getenv("REDIS_URL", "redis://localhost:6379"),
@@ -990,7 +1001,7 @@ class AnomalyDetector:
         current_oi: float, old_oi: float,
         cache: Dict
     ) -> None:
-        """Detect breakout (EMA + any 2/3)"""
+        """Detect breakout (EMA + any 2/4)"""
         # 1. 检查: 价格向上突破 EMA200 (更严格：用上一根 EMA 与当前 EMA)
         ema_prev = cache.get("ema200_prev")
         ema_curr = cache.get("ema200") or self._calc_ema(cache["closes"], self.config.ema_period)
@@ -1020,14 +1031,30 @@ class AnomalyDetector:
         # 4. Net inflow (normalized by quote volume)
         net_inflow_spike = net_inflow_ratio >= self.config.net_inflow_ratio_threshold
 
-        # After EMA condition, require any 2 of OI/volume/net inflow
-        conditions_met = sum([oi_spike, volume_spike, net_inflow_spike])
+        # 5. Price growth (overall gain over last N bars)
+        price_growth_spike = False
+        price_growth_pct = 0.0
+        lookback = int(self.config.price_growth_lookback_bars or 0)
+        if lookback > 0 and len(cache.get("closes") or []) >= lookback + 1:
+            base_close = float(cache["closes"][-(lookback + 1)])
+            if base_close > 0:
+                price_growth_pct = (close_price - base_close) / base_close
+                if price_growth_pct >= float(self.config.price_growth_min_gain_pct or 0.0):
+                    if not bool(self.config.price_growth_require_above_ema200):
+                        price_growth_spike = True
+                    else:
+                        recent_closes = cache["closes"][-lookback:]
+                        price_growth_spike = all(float(c) >= float(ema_curr) for c in recent_closes)
+
+        # After EMA condition, require any 2 of OI/volume/net inflow/price growth
+        conditions_met = sum([oi_spike, volume_spike, net_inflow_spike, price_growth_spike])
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 f"{symbol} {timeframe} ema_ok={ema_ok} "
                 f"oi_change={oi_change_pct:.2%} oi_spike={oi_spike} "
                 f"rvol={rvol:.2f} volume_spike={volume_spike} "
                 f"net_ratio={net_inflow_ratio:.2%} net_spike={net_inflow_spike} "
+                f"price_growth={price_growth_pct:.2%} price_growth_spike={price_growth_spike} "
                 f"conds={conditions_met}"
             )
         if conditions_met < 2:
@@ -1492,7 +1519,7 @@ async def main():
     print()
     print("Conditions for signal:")
     print("  1. Price breaks above EMA200 (or above-EMA if allowed)")
-    print("  2. Any 2 of: OI increase, volume spike, net inflow")
+    print("  2. Any 2 of: OI increase, volume spike, net inflow, price growth")
     print()
     
     await run_anomaly_detector(config)

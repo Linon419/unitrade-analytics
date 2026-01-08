@@ -624,15 +624,17 @@ async def generate_rising_index() -> str:
     """生成上涨潜力排行文本"""
     try:
         from unitrade.scanner.signal_detector import get_rising_ranking
+        from unitrade.core.time import format_ts, resolve_tz
         
         scores = await get_rising_ranking(top_n=10)
         
         if not scores:
             return "<b>🏆 上涨潜力排行</b>\n\n暂无数据 (需要先运行异动监测器收集信号)"
         
+        tz = resolve_tz()
         lines = [
             "<b>🏆 上涨潜力排行 (5日评估)</b>",
-            f"⏰ {datetime.now().strftime('%m-%d %H:%M')}",
+            f"⏰ {datetime.now(tz=tz).strftime('%m-%d %H:%M %Z')}",
             "━" * 20,
             "",
         ]
@@ -641,10 +643,13 @@ async def generate_rising_index() -> str:
             base = score.symbol.replace("USDT", "")
             trend = "↗" if score.ema_alignment == "bullish" else "↘" if score.ema_alignment == "bearish" else "→"
             oi_sign = "+" if score.cumulative_oi_change > 0 else ""
+            since = f"{score.price_change_since_rank:+.1%}" if getattr(score, "price_change_since_rank", None) is not None else "n/a"
+            first = format_ts(score.first_ranked_ts, "%m-%d %H:%M") if getattr(score, "first_ranked_ts", None) else "-"
             
             lines.append(
-                f"{i}. <b>{base}</b> ⚡{score.total_score:.1f}分\n"
-                f"   资金{oi_sign}{score.cumulative_oi_change:.1%} | 趋势{trend} | 信号{score.signal_count}次"
+                f"{i}. <b>{base}</b> ⚡{score.total_score:.1f}分  ({since})\n"
+                f"   价{score.price_structure_score:.1f} 资{score.oi_flow_score:.1f} 新{score.recency_score:.1f} 量{score.volume_score:.1f}"
+                f" | 首上榜{first} | 趋势{trend} | 信号{score.signal_count}次"
             )
         
         return "\n".join(lines)

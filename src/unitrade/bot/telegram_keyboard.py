@@ -561,6 +561,7 @@ class UniTradeBotHandler:
         """
         try:
             from unitrade.scanner.signal_detector import RedisStateManager
+            from unitrade.core.time import format_ts
 
             redis_url = self._get_redis_url()
             state_manager = RedisStateManager(redis_url=redis_url)
@@ -612,14 +613,28 @@ class UniTradeBotHandler:
                 else:
                     ema_alignment = "neutral"
 
-                rows.append((sym, total_score, cumulative_oi, avg_rvol, ema_alignment, len(signals)))
+                rows.append(
+                    (
+                        sym,
+                        total_score,
+                        cumulative_oi,
+                        avg_rvol,
+                        ema_alignment,
+                        len(signals),
+                        last_price,
+                        last_ts,
+                        oi_score,
+                        recency_score,
+                        volume_score,
+                    )
+                )
 
             rows.sort(key=lambda x: x[1], reverse=True)
             top = rows[: max(1, int(top_n))]
 
             lines = [
-                "<b>🏆 上涨排行（轻量版）</b>",
-                f"⏱ {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                "<b>上涨排行（轻量版）</b>",
+                f"时间: {format_ts(now, '%Y-%m-%d %H:%M')}",
                 "—" * 20,
             ]
 
@@ -631,12 +646,28 @@ class UniTradeBotHandler:
                 ]
             else:
                 lines.append("")
-                for i, (sym, score, cum_oi, avg_rvol, ema_align, count) in enumerate(top, 1):
+                for i, (sym, score, cum_oi, avg_rvol, ema_align, count, last_price, last_ts, oi_s, rec_s, vol_s) in enumerate(top, 1):
                     base = sym.replace("USDT", "")
                     trend = "↑" if ema_align == "bullish" else "↓" if ema_align == "bearish" else "→"
                     oi_sign = "+" if cum_oi >= 0 else ""
+                    first_ts, first_price = await state_manager.get_or_set_first_ranked(
+                        symbol=sym,
+                        ts=now,
+                        price=float(last_price or 0.0),
+                        prefix="anomaly",
+                    )
+                    since_abs = "n/a"
+                    since_pct = "n/a"
+                    if first_price and last_price and float(first_price) != 0.0:
+                        delta = float(last_price) - float(first_price)
+                        since_abs = f"{delta:+.6g}"
+                        since_pct = f"{delta / float(first_price):+.1%}"
+                    first_str = format_ts(first_ts, "%m-%d %H:%M")
                     lines.append(
-                        f"{i}. <b>{base}</b> ⚡{score:.1f}  OI {oi_sign}{cum_oi:.1%}  RVOL {avg_rvol:.1f}x  {trend}  ({count}次)"
+                        f"{i}. <b>{base}</b> {score:.1f}  OI {oi_sign}{cum_oi:.1%}  RVOL {avg_rvol:.1f}x  {trend}  ({count}次)"
+                    )
+                    lines.append(
+                        f"   首次上榜: {first_str}  自上榜: {since_abs} ({since_pct})  评分: oi={oi_s:.2f} rec={rec_s:.2f} vol={vol_s:.2f}"
                     )
 
             await state_manager.close()

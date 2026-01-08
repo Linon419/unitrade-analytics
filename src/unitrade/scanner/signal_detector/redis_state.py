@@ -58,6 +58,7 @@ class RedisStateManager:
         # 内存 fallback 用于防抖锁
         self._memory_locks: Dict[str, float] = {}
         self._memory_thresholds: Dict[str, int] = {}
+        self._memory_first_ranked: Dict[str, Tuple[float, float]] = {}
     
     async def connect(self):
         """连接 Redis (失败时使用内存 fallback)"""
@@ -389,6 +390,74 @@ class RedisStateManager:
         async for key in self._redis.scan_iter(match=pattern):
             keys.append(key)
         return keys
+
+    # ========== Rising Index Metadata ==========
+
+    @staticmethod
+    def _first_ranked_key(symbol: str, prefix: str = "anomaly") -> str:
+        return f"{prefix}:rising_index:first_ranked:{symbol}"
+
+    @staticmethod
+    def _encode_first_ranked(ts: float, price: float) -> str:
+        return f"{float(ts)}|{float(price)}"
+
+    @staticmethod
+    def _decode_first_ranked(value: str) -> Optional[Tuple[float, float]]:
+        try:
+            parts = str(value).split("|")
+            if len(parts) != 2:
+                return None
+            return float(parts[0]), float(parts[1])
+        except Exception:
+            return None
+
+    async def get_or_set_first_ranked(
+        self,
+        symbol: str,
+        ts: float,
+        price: float,
+        prefix: str = "anomaly",
+    ) -> Tuple[float, float]:
+        """
+        Return the first time this symbol entered the rising index ranking.
+
+        Stored as a string value: \"<ts>|<price>\".
+        - Uses Redis when available (persistent across restarts).
+        - Falls back to in-memory storage when Redis is unavailable.
+        """
+        key = self._first_ranked_key(symbol=symbol, prefix=prefix)
+
+        if not self._connected or not self._redis:
+            existing = self._memory_first_ranked.get(key)
+            if existing is not None:
+                return existing
+            self._memory_first_ranked[key] = (float(ts), float(price))
+            return self._memory_first_ranked[key]
+
+        value = self._encode_first_ranked(ts, price)
+        try:
+            created = await self._redis.set(key, value, nx=True)
+            if created:
+                return float(ts), float(price)
+
+            existing = await self._redis.get(key)
+            if existing:
+                decoded = self._decode_first_ranked(existing)
+                if decoded is not None:
+                    return decoded
+        except Exception:
+            existing = self._memory_first_ranked.get(key)
+            if existing is not None:
+                return existing
+            self._memory_first_ranked[key] = (float(ts), float(price))
+            return self._memory_first_ranked[key]
+
+        # Unexpected (empty/malformed Redis value) -> reset to provided values.
+        try:
+            await self._redis.set(key, value)
+        except Exception:
+            pass
+        return float(ts), float(price)
     
     async def check_anomaly_cooldown(
         self,

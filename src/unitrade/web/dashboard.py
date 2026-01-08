@@ -1142,6 +1142,7 @@ class WebDashboard:
         - 成交量持续性 15%
         """
         # Respect config switch: anomaly_detector.enabled + anomaly_detector.rising_index.enabled
+        rising_index_cfg = {}
         try:
             from pathlib import Path
             from unitrade.core.config import load_config
@@ -1149,8 +1150,9 @@ class WebDashboard:
             if Path("config/default.yaml").exists():
                 conf = load_config("config/default.yaml")
                 ad = conf.anomaly_detector or {}
+                rising_index_cfg = (ad.get("rising_index") or {}) if isinstance(ad, dict) else {}
                 ad_enabled = bool(ad.get("enabled", True))
-                rising_enabled = bool((ad.get("rising_index") or {}).get("enabled", True))
+                rising_enabled = bool((rising_index_cfg or {}).get("enabled", True))
                 if not (ad_enabled and rising_enabled):
                     return web.json_response(
                         {
@@ -1188,8 +1190,11 @@ class WebDashboard:
             
             # 计算排行
             from unitrade.scanner.signal_detector import RisingIndex, RisingIndexConfig
-            
-            config = RisingIndexConfig(redis_url=redis_url)
+
+            allowed = set(RisingIndexConfig.__dataclass_fields__.keys())
+            overrides = rising_index_cfg if isinstance(rising_index_cfg, dict) else {}
+            kwargs = {k: v for k, v in overrides.items() if k in allowed and k not in ("redis_url", "enabled")}
+            config = RisingIndexConfig(redis_url=redis_url, **kwargs)
             index = RisingIndex(config)
             await index.connect()
             
@@ -1235,8 +1240,18 @@ class WebDashboard:
     async def _handle_chart_klines(self, request: web.Request) -> web.Response:
         """?? K??? + WaveTrend ???? Pine ???? TradingView"""
         import numpy as np
-        import pandas as pd
-        import pandas_ta as pta
+
+        try:
+            import pandas as pd
+            import pandas_ta as pta
+        except ModuleNotFoundError:
+            return web.json_response(
+                {
+                    "error": "Optional dependencies missing: pandas/pandas_ta required for WaveTrend chart endpoint.",
+                    "hint": "Install with `pip install -e \".[ta]\"` (or install pandas/pandas_ta manually).",
+                },
+                status=503,
+            )
         from unitrade.core.config import load_config
         from unitrade.scanner import WaveTrendScanner, WaveTrendConfig
         
@@ -2228,6 +2243,7 @@ class WebDashboard:
             <!-- 实时 CVD -->
             <div class="card" style="border-color: #00ff88;">
                 <h2>📈 实时 CVD
+                    <span style="font-size:0.6em; color:#888; cursor:help; margin-left:5px;" title="此处 CVD 为 Binance 合约逐笔成交推导的净买卖额差(USDT 口径)。&#10;每个周期展示的是该周期内的 Δ；下方“累积 CVD”为服务启动以来累积。&#10;如需 Spot vs Futures 的 USDT 口径对比，请点“深度分析”。">?</span>
                     <div style="margin-left:auto;display:flex;gap:10px;align-items:center">
                         <button onclick="showCVDAnalysis()" style="background:transparent;border:1px solid #00ff88;color:#00ff88;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:12px">深度分析</button>
                         <select id="cvd-symbol" onchange="loadRealtimeCVD()" style="background:#333;color:#fff;border:1px solid #555;padding:4px 8px;border-radius:4px;font-size:12px">
@@ -2668,7 +2684,7 @@ class WebDashboard:
                 // 显示多周期 CVD
                 const coinName = symbol.replace('USDT','');
                 const timeframes = ['1m', '5m', '15m', '1h'];
-                let html = `<div style="font-size:13px;color:#888;margin-bottom:8px">${coinName} 累积成交量差</div>`;
+                let html = `<div style="font-size:13px;color:#888;margin-bottom:8px">${coinName} 成交量差 Δ (USDT)</div>`;
                 html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;text-align:center">';
                 
                 timeframes.forEach(tf => {
@@ -2691,7 +2707,7 @@ class WebDashboard:
                     const cls = cumCvd >= 0 ? 'positive' : 'negative';
                     const sign = cumCvd >= 0 ? '+' : '';
                     const emoji = cumCvd >= 0 ? '🟢 净买入' : '🔴 净卖出';
-                    html += `<div class="metric" style="margin-top:10px"><span class="metric-label">累积 CVD</span><span class="metric-value ${cls}">${sign}${cumCvd.toFixed(2)} ${emoji}</span></div>`;
+                    html += `<div class="metric" style="margin-top:10px"><span class="metric-label">累积 CVD (启动以来)</span><span class="metric-value ${cls}">${sign}${cumCvd.toFixed(2)} ${emoji}</span></div>`;
                 }
                 
                 document.getElementById('realtime-cvd').innerHTML = html;

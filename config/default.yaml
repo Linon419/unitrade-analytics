@@ -67,6 +67,11 @@ anomaly_detector:
   rvol_lookback: 20
   net_inflow_ratio_threshold: 0.05  # Net inflow ratio vs quote volume
   cooldown_seconds: 1800
+
+  # Price growth (overall gain over last N bars, after EMA condition)
+  price_growth_lookback_bars: 8
+  price_growth_min_gain_pct: 0.002
+  price_growth_require_above_ema200: true
   
   scan_all: true
   universe_max_symbols: 0  # 0 disables cap
@@ -84,6 +89,9 @@ anomaly_detector:
     volume_weight: 0.15
     recency_decay_hours: 24.0
     signal_ttl_days: 5
+    trend_mix_weight: 0.2
+    trend_angle_cap_deg: 0.6
+    trend_dev_cap_pct: 3.0
   
   telegram_push:
     enabled: true
@@ -206,6 +214,34 @@ signal_detector:
   min_quote_volume_24h: 1000000
   max_symbols: 50
   topic_id: 62
+
+# Big trade monitor (aggTrade whale alerts)
+big_trade_monitor:
+  enabled: false
+  # 动态阈值：max(min_notional, (24h成交额/24h成交笔数)*avg_multiplier)
+  min_notional: 50000
+  avg_multiplier: 200
+  cooldown_seconds: 30
+  refresh_seconds: 600
+  include_open_interest: true
+  min_quote_volume_24h: 1000000
+  max_symbols: 50
+  # topic_id: 1
+  # symbols: [BTCUSDT, ETHUSDT]  # 可选：手动指定币种，否则自动取 top N
+
+# OI + Price monitor (5m OI change + 5m open->close price change)
+oi_price_monitor:
+  enabled: false
+  oi_change_threshold: 0.03      # 3%
+  price_change_threshold: 0.03   # 3%
+  min_oi_value_usdt: 2000000
+  cooldown_seconds: 600
+  poll_interval_seconds: 10
+  max_concurrent_requests: 10
+  min_quote_volume_24h: 1000000
+  max_symbols: 50
+  # topic_id: 1
+  # symbols: [BSVUSDT]  # 可选：手动指定币种，否则自动取 top N
 
 # Realtime service
 realtime:
