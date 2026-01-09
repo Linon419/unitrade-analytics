@@ -1,171 +1,120 @@
 # UniTrade Analytics Gateway
 
-加密货币交易分析系统 - 实时市场数据分析、EMA 趋势雷达、资金流追踪。
+面向交易的加密市场数据分析网关：聚合 Binance/Bybit 公共数据，计算 OBI/CVD/OI 变化/波动率，提供 Web Dashboard、Telegram 推送与 CLI 扫描工具。
 
-## 功能特性
+English: A trader-focused analytics gateway for crypto market microstructure & flow signals (OBI/CVD/OI/volatility) with dashboard, Telegram notifications, and CLI scanners.
 
-### 📡 EMA Trend Radar
-- EMA 完美排列检测 (Flowering)
-- 连续趋势 Bar 统计
-- 接近 EMA 价位提醒
+## 你能得到什么（Trader Value）
 
-### 🔍 Short Squeeze Scanner
-- OI 飙升检测 (多空比异常)
-- Funding Rate 异常扫描
-- 清算数据监控
+- **更干净的盘口信号**：订单簿断档会自动重拉快照，避免 OBI 漂移导致的“假信号”。
+- **可解释的资金流**：实时 CVD（逐笔成交推导）+ Spot vs Futures 的 CVD 深度对比（K 线估算，USDT 口径）。
+- **热点捕捉**：OI 异动、Squeeze 释放、异常检测/上涨指数等扫描器可做 Telegram 推送。
+- **一键看盘**：Web Dashboard 集成核心图表与报告生成。
 
-### 📊 Market Reporter
-- 价格/资金费率/持仓量
-- 多空比 (全局/大户)
-- Telegram 格式输出
+## 功能概览
 
-### 📈 Web Dashboard
-- 实时币种卡片
-- OI 变化图表
-- 多空比历史图表
-- 涨跌榜
-
-### 🤖 Telegram Bot
-- 定时推送 EMA 报告
-- 定时推送市场报告
-
----
+- **Web Dashboard**：实时 OBI/CVD/波动率、CVD 深度分析、市场报告生成等。
+- **Scanner**：OI Spike、Squeeze、Funding/Liquidation（按配置启用）。
+- **Tracker**：资金流追踪（逐笔成交→快照→SQLite）。
+- **Telegram Bot / 推送**：定时报告、信号推送（按配置启用）。
+- **Prometheus Metrics**：进程/连接/扫描等指标（`/metrics`）。
 
 ## 快速开始
 
-### 安装
+### 1) 安装
 
-```bash
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
 pip install -e .
 ```
 
-### CLI 命令
+可选（WaveTrend / Squeeze Momentum / 图表相关指标）：
 
 ```powershell
-$env:PYTHONPATH="src"
+pip install -e ".[ta]"
+```
 
-# 📡 EMA 趋势雷达
-python -m unitrade.cli ema --timeframe 1h --top 100
+### 2) 运行 Dashboard
 
-# 🔍 OI 扫描器
-python -m unitrade.cli scan --continuous --interval 5
-
-# 📊 市场报告
-python -m unitrade.cli report BTCUSDT
-
-# 📈 Web 仪表板
-python -m unitrade.cli dashboard
+```powershell
+unitrade dashboard
 # 打开 http://localhost:8080
-
-# 🚀 Bot + Dashboard (推荐)
-$env:TELEGRAM_BOT_TOKEN="your_token"
-$env:TELEGRAM_CHAT_ID="your_chat_id"
-python -m unitrade.cli serve --port 8080 --interval 60
-# Prometheus: http://localhost:8000/metrics
-
-# 💾 资金流追踪
-python -m unitrade.cli track -s BTCUSDT,ETHUSDT
-
-# 🤖 Telegram Bot
-$env:TELEGRAM_BOT_TOKEN="your_token"
-$env:TELEGRAM_CHAT_ID="your_chat_id"
-python -m unitrade.cli bot
 ```
 
-### 运行测试
+### 3) 一键启动（Dashboard + Bot + 扫描/推送）
+
+```powershell
+$env:TELEGRAM_BOT_TOKEN="your_token"
+$env:TELEGRAM_CHAT_ID="your_chat_id"
+unitrade serve --port 8080 --interval 60
+
+# Dashboard:   http://localhost:8080
+# Prometheus:  http://localhost:8000/metrics
+```
+
+### 4) 常用 CLI
+
+```powershell
+# 市场扫描（OI / Funding / 清算等）
+unitrade scan --continuous --interval 5
+
+# EMA 趋势雷达（示例）
+unitrade ema --timeframe 1h --top 100 --results 10
+
+# 生成市场报告（REST 聚合）
+unitrade report BTCUSDT
+
+# 资金流追踪（逐笔成交→SQLite）
+unitrade track -s BTCUSDT,ETHUSDT
+```
+
+如果你更喜欢 `python -m` 的方式（不依赖脚本入口）：
 
 ```powershell
 $env:PYTHONPATH="src"
-pytest tests/unit/ -v
+python -m unitrade.cli dashboard
 ```
 
----
+## 配置
 
-## 项目结构
+默认配置文件：`config/default.yaml`（也可通过环境变量 `UNITRADE_CONFIG` 指定）。
 
-```
-unitrade-analytics/
-├── src/unitrade/
-│   ├── scanner/        # 扫描器
-│   │   ├── ema_radar.py      # EMA 趋势雷达
-│   │   ├── squeeze_scanner.py  # OI 扫描
-│   │   └── funding_scanner.py  # 资金费率扫描
-│   ├── tracker/        # 数据追踪
-│   │   ├── fund_flow.py      # 资金流追踪 (WebSocket)
-│   │   └── market_report.py  # 综合报告
-│   ├── web/            # Web 界面
-│   │   └── dashboard.py      # 仪表板
-│   ├── bot/            # Telegram Bot
-│   │   └── telegram_bot.py
-│   ├── data/           # 数据卫生
-│   │   └── hygiene.py        # SQLite 维护
-│   ├── analytics/      # 分析引擎
-│   │   ├── orderbook.py      # OBI 计算
-│   │   ├── trade.py          # CVD/波动率
-│   │   └── open_interest.py  # OI 分析
-│   ├── connection/     # WebSocket 连接
-│   │   ├── binance.py
-│   │   └── bybit.py
-│   └── cli.py          # 命令行入口
-├── config/
-│   └── default.yaml    # 配置文件
-├── data/               # SQLite 数据存储
-└── tests/              # 单元测试
-```
+常用开关：
 
----
+- `exchanges.binance.enabled` / `exchanges.bybit.enabled`
+- `realtime.enabled`：Dashboard 实时数据服务（OBI/CVD/波动率）
+- `telegram.enabled`：Telegram 相关功能总开关
+- `*_scanner.enabled` / `signal_detector.enabled`：各扫描器/信号模块开关
 
-## 配置说明
+## 数据口径（很重要）
 
-编辑 `config/default.yaml`:
+- **Realtime Dashboard 的 CVD**：来自 Binance 合约逐笔成交推导，**USDT 口径（quote notional）**；每个周期显示的是该周期内的 Δ，`cumulative_cvd` 为服务启动以来累积（同时提供 `*_qty` 字段用于数量口径对比/调试）。
+- **“CVD 深度分析”**：基于 Spot/Futures K 线的 `taker_buy_quote_volume` 估算，**USDT 口径（quote）**，用于对比 Spot vs Futures 资金流差异。
+- **OBI**：Top N 深度（默认 Top 10）按买卖盘数量不平衡计算，范围 [-1, 1]。
 
-```yaml
-# Scanner 配置
-scanner:
-  auto_top_n: 150        # 扫描 Top 150 交易量币种
-  extra_whitelist:
-    - PEPEUSDT           # 额外添加
-  spike_threshold: 1.10  # 10% OI 飙升触发
-
-# EMA 雷达配置
-ema_radar:
-  timeframes: ["1h", "4h"]
-  ema_periods: [21, 55, 100, 200]
-  near_ema_threshold: 0.01  # 1%
-
-# 数据存储 (SQLite)
-database:
-  sqlite_path: "data/unitrade.db"
-  data_retention_days: 30
-```
-
----
-
-## Telegram 设置
-
-1. 创建 Bot: [@BotFather](https://t.me/BotFather)
-2. 获取 Chat ID: [@userinfobot](https://t.me/userinfobot)
-3. 设置环境变量:
+## 测试
 
 ```powershell
-$env:TELEGRAM_BOT_TOKEN="123456:ABC-DEF..."
-$env:TELEGRAM_CHAT_ID="123456789"
+$env:PYTHONPATH="src"
+pytest -q
 ```
 
----
+注意：部分扫描器依赖可选第三方库（例如 WaveTrend 需要 `pandas_ta`）。如果环境里无法安装这些依赖，请保持对应模块 `enabled: false`，不影响 Dashboard/Realtime/FundFlow 等核心能力。
 
-## Docker (可选)
+## 项目结构（简版）
 
-```powershell
-cd docker
-docker compose up -d
 ```
-
-服务端口:
-- Dashboard: 8080
-- WebSocket: 8765
-
----
+src/unitrade/
+  analytics/   # OBI/CVD/OI/波动率等核心计算
+  web/         # Dashboard + realtime service + cvd 深度分析
+  scanner/     # OI/Squeeze/WaveTrend/异常检测等扫描器
+  tracker/     # fund_flow 资金流追踪（SQLite）
+  bot/         # Telegram bot / 推送
+  cli.py       # unitrade 入口
+config/default.yaml
+tests/
+```
 
 ## License
 

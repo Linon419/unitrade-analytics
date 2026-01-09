@@ -8,8 +8,8 @@ redis>=5.0.0
 
 # Math / indicators
 numpy>=1.26.0
-pandas>=2.1.0
-pandas-ta==0.4.71b0
+# Optional: WaveTrend / Squeeze Momentum requires pandas + pandas_ta.
+# Install via: `pip install -e ".[ta]"` (or install pandas/pandas_ta manually).
 
 # Data structures
 sortedcontainers>=2.4.0

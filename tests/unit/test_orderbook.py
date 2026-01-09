@@ -44,6 +44,74 @@ class TestLocalOrderBook:
         assert Decimal("50000") not in ob.bids
         assert ob.bids[Decimal("49990")] == Decimal("2.0")
         assert ob.asks[Decimal("50010")] == Decimal("1.5")
+
+    def test_apply_binance_delta_happy_path(self):
+        """测试 Binance depthUpdate 连续序号更新"""
+        ob = LocalOrderBook("BTCUSDT", "binance")
+        ob.apply_snapshot([["50000", "1.0"]], [["50010", "1.0"]], 100)
+
+        ok = ob.apply_binance_delta(
+            bids=[["49990", "2.0"]],
+            asks=[["50010", "1.5"]],
+            first_update_id=101,
+            final_update_id=101,
+            prev_final_update_id=100,
+        )
+
+        assert ok is True
+        assert ob.last_update_id == 101
+        assert ob.bids[Decimal("49990")] == Decimal("2.0")
+        assert ob.asks[Decimal("50010")] == Decimal("1.5")
+
+    def test_apply_binance_delta_gap_requires_resync(self):
+        """测试 Binance depthUpdate 断档检测"""
+        ob = LocalOrderBook("BTCUSDT", "binance")
+        ob.apply_snapshot([["50000", "1.0"]], [["50010", "1.0"]], 100)
+
+        ok = ob.apply_binance_delta(
+            bids=[["49990", "2.0"]],
+            asks=[["50010", "1.5"]],
+            first_update_id=105,
+            final_update_id=106,
+            prev_final_update_id=104,
+        )
+
+        assert ok is False
+        assert ob.last_update_id == 100  # 未更新
+
+    def test_apply_binance_delta_covering_expected_next(self):
+        """测试首包覆盖 expected_next 的兼容逻辑"""
+        ob = LocalOrderBook("BTCUSDT", "binance")
+        ob.apply_snapshot([["50000", "1.0"]], [["50010", "1.0"]], 100)
+
+        ok = ob.apply_binance_delta(
+            bids=[["49990", "2.0"]],
+            asks=[["50010", "1.5"]],
+            first_update_id=90,
+            final_update_id=110,
+            prev_final_update_id=None,
+        )
+
+        assert ok is True
+        assert ob.last_update_id == 110
+
+    def test_apply_binance_delta_buffer_before_snapshot(self):
+        """测试快照前缓存 diffDepth，快照后可回放"""
+        ob = LocalOrderBook("BTCUSDT", "binance")
+
+        ok = ob.apply_binance_delta(
+            bids=[["49990", "2.0"]],
+            asks=[["50010", "1.5"]],
+            first_update_id=101,
+            final_update_id=101,
+            prev_final_update_id=100,
+        )
+        assert ok is False
+        assert not ob.is_initialized
+
+        ob.apply_snapshot([["50000", "1.0"]], [["50010", "1.0"]], 100)
+        assert ob.is_initialized
+        assert ob.last_update_id == 101
     
     def test_calculate_obi(self):
         """测试 OBI 计算"""

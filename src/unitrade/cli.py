@@ -301,6 +301,8 @@ def main():
     serve_parser.add_argument("--no-market", action="store_true", help="Disable Market Scanner (OI/Funding/Liquidation)")
     serve_parser.add_argument("--no-wavetrend", action="store_true", help="Disable WaveTrend Scanner")
     serve_parser.add_argument("--no-anomaly", action="store_true", help="Disable Anomaly Detector (EMA200 breakout)")
+    serve_parser.add_argument("--no-bigtrade", action="store_true", help="Disable Big Trade Monitor (aggTrade whale alerts)")
+    serve_parser.add_argument("--no-oi-price", action="store_true", help="Disable OI+Price Monitor (5m OI + 5m price)")
     serve_parser.add_argument("--no-realtime", action="store_true", help="Disable realtime WebSocket service")
     
     # bot command
@@ -713,6 +715,99 @@ async def cmd_serve(args):
     elif not oi_enabled:
         print("Market Scanner: disabled (config)")
 
+    # Big Trade Monitor (aggTrade whale alerts) - 使用 big_trade_monitor 配置
+    big_trade_monitor = None
+    bt_cfg = cfg.get("big_trade_monitor", {}) if isinstance(cfg, dict) else {}
+    bt_enabled = binance_enabled and bool(bt_cfg.get("enabled", False))
+    if bt_enabled and telegram_enabled and not getattr(args, "no_bigtrade", False):
+        if not resolved_token or not resolved_chat_id:
+            print("Big Trade Monitor: disabled (missing TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID)")
+        else:
+            try:
+                from unitrade.scanner import BigTradeMonitor, BigTradeMonitorConfig
+
+                raw_symbols = bt_cfg.get("symbols")
+                symbols = None
+                if isinstance(raw_symbols, str) and raw_symbols.strip():
+                    symbols = [s.strip().upper() for s in raw_symbols.split(",") if s.strip()]
+                elif isinstance(raw_symbols, list):
+                    symbols = [str(s).strip().upper() for s in raw_symbols if str(s).strip()]
+
+                topic_id = bt_cfg.get(
+                    "topic_id",
+                    (topics.get("general") if isinstance(topics, dict) else None),
+                )
+
+                big_trade_monitor = BigTradeMonitor(
+                    BigTradeMonitorConfig(
+                        telegram_bot_token=resolved_token,
+                        telegram_chat_id=resolved_chat_id,
+                        telegram_topic_id=topic_id,
+                        min_notional=float(bt_cfg.get("min_notional", 50_000)),
+                        avg_multiplier=float(bt_cfg.get("avg_multiplier", 200)),
+                        cooldown_seconds=int(bt_cfg.get("cooldown_seconds", 30)),
+                        refresh_seconds=int(bt_cfg.get("refresh_seconds", 600)),
+                        include_open_interest=bool(bt_cfg.get("include_open_interest", True)),
+                        min_quote_volume_24h=float(bt_cfg.get("min_quote_volume_24h", 1_000_000)),
+                        max_symbols=int(bt_cfg.get("max_symbols", 50)),
+                        symbols=symbols,
+                    )
+                )
+                await big_trade_monitor.start()
+                print("Big Trade Monitor: running (aggTrade)")
+            except Exception as e:
+                print(f"Big Trade Monitor: failed to start ({e})")
+                big_trade_monitor = None
+    elif bt_enabled and (not telegram_enabled):
+        print("Big Trade Monitor: disabled (config telegram.enabled=false)")
+
+    # OI + Price Monitor (5m OI change + 5m open->close) - 使用 oi_price_monitor 配置
+    oi_price_monitor = None
+    op_cfg = cfg.get("oi_price_monitor", {}) if isinstance(cfg, dict) else {}
+    op_enabled = binance_enabled and bool(op_cfg.get("enabled", False))
+    if op_enabled and telegram_enabled and not getattr(args, "no_oi_price", False):
+        if not resolved_token or not resolved_chat_id:
+            print("OI+Price Monitor: disabled (missing TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID)")
+        else:
+            try:
+                from unitrade.scanner import OIPriceMonitor, OIPriceMonitorConfig
+
+                raw_symbols = op_cfg.get("symbols")
+                symbols = None
+                if isinstance(raw_symbols, str) and raw_symbols.strip():
+                    symbols = [s.strip().upper() for s in raw_symbols.split(",") if s.strip()]
+                elif isinstance(raw_symbols, list):
+                    symbols = [str(s).strip().upper() for s in raw_symbols if str(s).strip()]
+
+                topic_id = op_cfg.get(
+                    "topic_id",
+                    (topics.get("general") if isinstance(topics, dict) else None),
+                )
+
+                oi_price_monitor = OIPriceMonitor(
+                    OIPriceMonitorConfig(
+                        telegram_bot_token=resolved_token,
+                        telegram_chat_id=resolved_chat_id,
+                        telegram_topic_id=topic_id,
+                        oi_change_threshold=float(op_cfg.get("oi_change_threshold", 0.03)),
+                        price_change_threshold=float(op_cfg.get("price_change_threshold", 0.03)),
+                        min_oi_value_usdt=float(op_cfg.get("min_oi_value_usdt", 2_000_000)),
+                        cooldown_seconds=int(op_cfg.get("cooldown_seconds", 600)),
+                        poll_interval_seconds=int(op_cfg.get("poll_interval_seconds", 10)),
+                        max_concurrent_requests=int(op_cfg.get("max_concurrent_requests", 10)),
+                        min_quote_volume_24h=float(op_cfg.get("min_quote_volume_24h", 1_000_000)),
+                        max_symbols=int(op_cfg.get("max_symbols", 50)),
+                        symbols=symbols,
+                    )
+                )
+                await oi_price_monitor.start()
+                print("OI+Price Monitor: running (5m)")
+            except Exception as e:
+                print(f"OI+Price Monitor: failed to start ({e})")
+                oi_price_monitor = None
+    elif op_enabled and (not telegram_enabled):
+        print("OI+Price Monitor: disabled (config telegram.enabled=false)")
+
     # WaveTrend Scanner - 使用 wavetrend_scanner 配置
     wavetrend_scanner = None
     wavetrend_task = None
@@ -919,6 +1014,10 @@ async def cmd_serve(args):
             market_scan_task.cancel()
         if market_scanner:
             await market_scanner.stop()
+        if big_trade_monitor:
+            await big_trade_monitor.stop()
+        if oi_price_monitor:
+            await oi_price_monitor.stop()
         if anomaly_task:
             anomaly_task.cancel()
         if ranking_push_task:

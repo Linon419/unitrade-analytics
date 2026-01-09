@@ -18,8 +18,16 @@ from typing import Dict, List, Optional, Tuple
 
 import aiohttp
 import numpy as np
-import pandas as pd
-import pandas_ta as ta
+
+try:
+    import pandas as pd
+    import pandas_ta as ta
+except ModuleNotFoundError as e:  # pragma: no cover
+    raise ModuleNotFoundError(
+        "WaveTrendScanner requires optional dependencies `pandas` and `pandas_ta`. "
+        "Install with `pip install -e \".[ta]\"` (or install them manually), "
+        "or keep `wavetrend_scanner.enabled=false` in `config/default.yaml`."
+    ) from e
 
 logger = logging.getLogger(__name__)
 

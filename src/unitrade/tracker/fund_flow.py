@@ -145,17 +145,50 @@ class FundFlowDB:
         
         since = int((datetime.now() - timedelta(hours=hours)).timestamp())
         
+        # 注意: flow_snapshot 存的是“当日累计值”，不能用 SUM 聚合；应使用每小时首尾差值。
         cursor.execute("""
-            SELECT 
-                strftime('%Y-%m-%d %H:00', datetime(timestamp, 'unixepoch', 'localtime')) as hour,
-                SUM(buy_volume) as buy,
-                SUM(sell_volume) as sell,
-                SUM(buy_volume) - SUM(sell_volume) as net
-            FROM flow_snapshot
-            WHERE symbol = ? AND timestamp >= ?
-            GROUP BY hour
-            ORDER BY hour DESC
-        """, (symbol, since))
+            WITH grouped AS (
+                SELECT
+                    strftime('%Y-%m-%d %H:00', datetime(timestamp, 'unixepoch', 'localtime')) AS hour,
+                    MIN(timestamp) AS ts_start,
+                    MAX(timestamp) AS ts_end
+                FROM flow_snapshot
+                WHERE symbol = ? AND timestamp >= ?
+                GROUP BY hour
+            ),
+            starts AS (
+                SELECT
+                    g.hour AS hour,
+                    fs.buy_volume AS buy_start,
+                    fs.sell_volume AS sell_start,
+                    fs.cvd AS cvd_start,
+                    fs.trade_count AS trade_start
+                FROM grouped g
+                JOIN flow_snapshot fs
+                  ON fs.symbol = ? AND fs.timestamp = g.ts_start
+            ),
+            ends AS (
+                SELECT
+                    g.hour AS hour,
+                    fs.buy_volume AS buy_end,
+                    fs.sell_volume AS sell_end,
+                    fs.cvd AS cvd_end,
+                    fs.trade_count AS trade_end
+                FROM grouped g
+                JOIN flow_snapshot fs
+                  ON fs.symbol = ? AND fs.timestamp = g.ts_end
+            )
+            SELECT
+                g.hour,
+                (e.buy_end - s.buy_start) AS buy,
+                (e.sell_end - s.sell_start) AS sell,
+                (e.cvd_end - s.cvd_start) AS net,
+                (e.trade_end - s.trade_start) AS trades
+            FROM grouped g
+            JOIN starts s ON s.hour = g.hour
+            JOIN ends e ON e.hour = g.hour
+            ORDER BY g.hour DESC
+        """, (symbol, since, symbol, symbol))
         
         results = []
         for row in cursor.fetchall():
@@ -164,6 +197,7 @@ class FundFlowDB:
                 "buy": row[1],
                 "sell": row[2],
                 "net_flow": row[3],
+                "trade_count": row[4],
             })
         
         conn.close()
@@ -176,17 +210,50 @@ class FundFlowDB:
         
         since = int((datetime.now() - timedelta(days=days)).timestamp())
         
+        # 注意: flow_snapshot 存的是“当日累计值”，不能用 SUM 聚合；应使用每日首尾差值。
         cursor.execute("""
-            SELECT 
-                strftime('%m%d', datetime(timestamp, 'unixepoch', 'localtime')) as date,
-                SUM(buy_volume) as buy,
-                SUM(sell_volume) as sell,
-                SUM(buy_volume) - SUM(sell_volume) as net
-            FROM flow_snapshot
-            WHERE symbol = ? AND timestamp >= ?
-            GROUP BY date
-            ORDER BY date DESC
-        """, (symbol, since))
+            WITH grouped AS (
+                SELECT
+                    strftime('%m%d', datetime(timestamp, 'unixepoch', 'localtime')) AS day,
+                    MIN(timestamp) AS ts_start,
+                    MAX(timestamp) AS ts_end
+                FROM flow_snapshot
+                WHERE symbol = ? AND timestamp >= ?
+                GROUP BY day
+            ),
+            starts AS (
+                SELECT
+                    g.day AS day,
+                    fs.buy_volume AS buy_start,
+                    fs.sell_volume AS sell_start,
+                    fs.cvd AS cvd_start,
+                    fs.trade_count AS trade_start
+                FROM grouped g
+                JOIN flow_snapshot fs
+                  ON fs.symbol = ? AND fs.timestamp = g.ts_start
+            ),
+            ends AS (
+                SELECT
+                    g.day AS day,
+                    fs.buy_volume AS buy_end,
+                    fs.sell_volume AS sell_end,
+                    fs.cvd AS cvd_end,
+                    fs.trade_count AS trade_end
+                FROM grouped g
+                JOIN flow_snapshot fs
+                  ON fs.symbol = ? AND fs.timestamp = g.ts_end
+            )
+            SELECT
+                g.day,
+                (e.buy_end - s.buy_start) AS buy,
+                (e.sell_end - s.sell_start) AS sell,
+                (e.cvd_end - s.cvd_start) AS net,
+                (e.trade_end - s.trade_start) AS trades
+            FROM grouped g
+            JOIN starts s ON s.day = g.day
+            JOIN ends e ON e.day = g.day
+            ORDER BY g.day DESC
+        """, (symbol, since, symbol, symbol))
         
         results = []
         for row in cursor.fetchall():
@@ -195,6 +262,7 @@ class FundFlowDB:
                 "buy": row[1],
                 "sell": row[2],
                 "net_flow": row[3],
+                "trade_count": row[4],
             })
         
         conn.close()
@@ -317,11 +385,18 @@ class FundFlowTracker:
         if symbol not in self._accumulators:
             return
         
+        # 检查是否跨天：先重置再计入当笔成交，避免“新的一天第一笔被清零”
+        now = datetime.now()
+        acc = self._accumulators[symbol]
+        if now.date() > acc["day_start"].date():
+            acc["buy_volume"] = 0.0
+            acc["sell_volume"] = 0.0
+            acc["trade_count"] = 0
+            acc["day_start"] = now.replace(hour=0, minute=0, second=0)
+
         qty = float(data.get("q", 0))
         price = float(data.get("p", 0))
         is_buyer_maker = data.get("m", False)
-        
-        acc = self._accumulators[symbol]
         
         # 判断买卖方向
         if is_buyer_maker:
@@ -333,15 +408,6 @@ class FundFlowTracker:
         
         acc["trade_count"] += 1
         acc["last_price"] = price
-        
-        # 检查是否跨天
-        now = datetime.now()
-        if now.date() > acc["day_start"].date():
-            # 新的一天，重置累计
-            acc["buy_volume"] = 0.0
-            acc["sell_volume"] = 0.0
-            acc["trade_count"] = 0
-            acc["day_start"] = now.replace(hour=0, minute=0, second=0)
     
     async def _snapshot_loop(self) -> None:
         """定时快照"""

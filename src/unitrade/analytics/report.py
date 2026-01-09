@@ -93,6 +93,9 @@ class MarketReportGenerator:
         # Realtime metrics
         obi_data = self.realtime.get_obi(symbol, "1m") if self.realtime else None
         vol_data = self.realtime.get_volatility(symbol) if self.realtime else None
+        obi_1m = 0.0
+        if isinstance(obi_data, dict):
+            obi_1m = float((obi_data.get("current") or {}).get("obi_avg") or 0)
         
         # Construct Report
         report = {
@@ -106,7 +109,7 @@ class MarketReportGenerator:
                 "24h": cvd_data.get("24h", {"spot": 0, "futures": 0}),
             },
             "realtime": {
-                "obi_1m": obi_data.get("obi_avg", 0) if obi_data else 0,
+                "obi_1m": obi_1m,
                 "volatility": vol_data.get("volatility_pct", 0) if vol_data else 0
             },
             "ema_status": ema_status

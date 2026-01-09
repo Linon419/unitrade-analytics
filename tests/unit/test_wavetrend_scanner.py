@@ -7,6 +7,8 @@ import pytest
 import numpy as np
 import pandas as pd
 
+pandas_ta = pytest.importorskip("pandas_ta")
+
 from unitrade.scanner.wavetrend_scanner import (
     WaveTrendScanner,
     WaveTrendConfig,

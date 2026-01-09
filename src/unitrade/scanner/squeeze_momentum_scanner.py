@@ -18,8 +18,16 @@ from typing import Dict, List, Optional, Tuple
 
 import aiohttp
 import numpy as np
-import pandas as pd
-import pandas_ta as ta
+
+try:
+    import pandas as pd
+    import pandas_ta as ta
+except ModuleNotFoundError as e:  # pragma: no cover
+    raise ModuleNotFoundError(
+        "SqueezeMomentumScanner requires optional dependencies `pandas` and `pandas_ta`. "
+        "Install with `pip install -e \".[ta]\"` (or install them manually), "
+        "or keep `squeeze_scanner.enabled=false` / related features disabled."
+    ) from e
 
 from unitrade.order.rate_limiter import BinanceRateLimiter
 

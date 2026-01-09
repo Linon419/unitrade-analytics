@@ -1001,7 +1001,7 @@ class AnomalyDetector:
         current_oi: float, old_oi: float,
         cache: Dict
     ) -> None:
-        """Detect breakout (EMA + any 2/4)"""
+        """Detect breakout (EMA + (price growth OR any 2/4))"""
         # 1. 检查: 价格向上突破 EMA200 (更严格：用上一根 EMA 与当前 EMA)
         ema_prev = cache.get("ema200_prev")
         ema_curr = cache.get("ema200") or self._calc_ema(cache["closes"], self.config.ema_period)
@@ -1046,7 +1046,9 @@ class AnomalyDetector:
                         recent_closes = cache["closes"][-lookback:]
                         price_growth_spike = all(float(c) >= float(ema_curr) for c in recent_closes)
 
-        # After EMA condition, require any 2 of OI/volume/net inflow/price growth
+        # After EMA condition:
+        # - If price growth triggers, allow it alone.
+        # - Otherwise require any 2 of OI/volume/net inflow/price growth.
         conditions_met = sum([oi_spike, volume_spike, net_inflow_spike, price_growth_spike])
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
@@ -1057,7 +1059,7 @@ class AnomalyDetector:
                 f"price_growth={price_growth_pct:.2%} price_growth_spike={price_growth_spike} "
                 f"conds={conditions_met}"
             )
-        if conditions_met < 2:
+        if (conditions_met < 2) and (not price_growth_spike):
             return
         
         
@@ -1153,14 +1155,11 @@ class RisingIndexConfig:
     redis_prefix: str = "anomaly"
     
     # 权重
-    price_structure_weight: float = 0.35
-    oi_flow_weight: float = 0.30
-    recency_weight: float = 0.20
+    price_structure_weight: float = 0.60
+    oi_flow_weight: float = 0.25
     volume_weight: float = 0.15
     
     # 时间衰减
-    recency_decay_hours: float = 24.0  # 24小时后信号权重衰减一半
-    
     # 信号保留时间
     signal_ttl_days: int = 5
     
@@ -1175,7 +1174,6 @@ class RisingScore:
     total_score: float
     price_structure_score: float
     oi_flow_score: float
-    recency_score: float
     volume_score: float
     signal_count: int
     cumulative_oi_change: float
@@ -1198,9 +1196,8 @@ class RisingIndex:
     上涨指数排行系统
     
     评分算法:
-    - 价格结构 (35%): 更高低点、EMA 排列、EMA200 距离、突破持续性
-    - 资金流入 (30%): 累计 OI 变化、OI 增加一致性
-    - 动量新鲜度 (20%): 近期信号权重更高 (指数衰减)
+    - 价格结构 (60%): 更高低点、EMA 排列、EMA200 距离、突破持续性
+    - 资金流入 (25%): 累计 OI 变化、OI 增加一致性
     - 成交量持续性 (15%): 平均放量倍数
     """
     
@@ -1266,7 +1263,6 @@ class RisingIndex:
         # 解析信号
         oi_changes = []
         rvols = []
-        recency_weights = []
         prices = []
         ema200s = []
         
@@ -1284,36 +1280,38 @@ class RisingIndex:
                 ema200s.append(ema200)
                 
                 # 时间衰减权重
-                hours_ago = (now - timestamp) / 3600
-                decay = np.exp(-hours_ago / self.config.recency_decay_hours)
-                recency_weights.append(decay)
         
         if not oi_changes:
             return None
         
-        # 1. 资金流入得分 (30%)
+        # 1. 资金流入得分 (25%)
         cumulative_oi = sum(oi_changes)
         oi_consistency = sum(1 for oi in oi_changes if oi > 0) / len(oi_changes)
         oi_score = self._normalize(cumulative_oi, 0, 0.5) * 0.6 + oi_consistency * 0.4
         
-        # 2. 动量新鲜度得分 (20%)
-        recency_score = sum(recency_weights) / len(recency_weights)
-        
-        # 3. 成交量得分 (15%)
+        # 2. 成交量得分 (15%)
         avg_rvol = sum(rvols) / len(rvols)
         volume_score = self._normalize(avg_rvol, 1, 10)
         
-        # 4. 价格结构得分 (35%) - 需要获取当前市场数据
+        # 3. 价格结构得分 (60%) - 需要获取当前市场数据
         price_score, ema_alignment, price_change = await self._calc_price_structure(
             symbol, prices[-1] if prices else 0, ema200s[-1] if ema200s else 0
         )
         
         # 加权总分
+        weight_sum = (
+            float(self.config.price_structure_weight)
+            + float(self.config.oi_flow_weight)
+            + float(self.config.volume_weight)
+        )
+        weight_sum = weight_sum if weight_sum > 0 else 1.0
         total = (
-            self.config.price_structure_weight * price_score +
-            self.config.oi_flow_weight * oi_score +
-            self.config.recency_weight * recency_score +
-            self.config.volume_weight * volume_score
+            (
+                self.config.price_structure_weight * price_score
+                + self.config.oi_flow_weight * oi_score
+                + self.config.volume_weight * volume_score
+            )
+            / weight_sum
         ) * 100
         
         return RisingScore(
@@ -1321,7 +1319,6 @@ class RisingIndex:
             total_score=total,
             price_structure_score=price_score * 100,
             oi_flow_score=oi_score * 100,
-            recency_score=recency_score * 100,
             volume_score=volume_score * 100,
             signal_count=len(signals),
             cumulative_oi_change=cumulative_oi,
@@ -1336,7 +1333,7 @@ class RisingIndex:
         try:
             # 获取最新价格和 K 线
             url = "https://fapi.binance.com/fapi/v1/klines"
-            params = {"symbol": symbol, "interval": "4h", "limit": 50}
+            params = {"symbol": symbol, "interval": "30m", "limit": 50}
             
             async with self._session.get(url, params=params) as resp:
                 if resp.status != 200:
@@ -1519,7 +1516,7 @@ async def main():
     print()
     print("Conditions for signal:")
     print("  1. Price breaks above EMA200 (or above-EMA if allowed)")
-    print("  2. Any 2 of: OI increase, volume spike, net inflow, price growth")
+    print("  2. Price growth, OR any 2 of: OI increase, volume spike, net inflow, price growth")
     print()
     
     await run_anomaly_detector(config)

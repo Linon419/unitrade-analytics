@@ -92,6 +92,24 @@ class LocalOrderBook:
         
         self.last_update_id = update_id
         self._initialized = True
+
+        # 如果在初始化前缓存过 Binance diffDepth，尝试回放
+        if self._buffer:
+            buffered = self._buffer
+            self._buffer = []
+            self._syncing = False
+            for item in buffered:
+                try:
+                    self.apply_binance_delta(
+                        bids=item.get("b", []),
+                        asks=item.get("a", []),
+                        first_update_id=int(item.get("U", 0) or 0),
+                        final_update_id=int(item.get("u", 0) or 0),
+                        prev_final_update_id=(int(item["pu"]) if "pu" in item and item["pu"] is not None else None),
+                    )
+                except Exception:
+                    # 如果回放失败，保持已初始化状态；上层可触发重拉快照
+                    break
     
     def apply_delta(self, bids: List, asks: List, update_id: int) -> bool:
         """
@@ -121,6 +139,55 @@ class LocalOrderBook:
         
         self.last_update_id = update_id
         return True
+
+    def apply_binance_delta(
+        self,
+        *,
+        bids: List,
+        asks: List,
+        first_update_id: int,
+        final_update_id: int,
+        prev_final_update_id: Optional[int] = None,
+    ) -> bool:
+        """
+        应用 Binance diffDepth (depthUpdate) 增量更新。
+
+        关键字段:
+        - U: firstUpdateId
+        - u: finalUpdateId
+        - pu: previousFinalUpdateId (部分 stream 提供)
+
+        返回:
+            True 表示已应用或可忽略(过期)；False 表示发生断档/不同步，需要上层重拉快照。
+        """
+        # 缺少序号时无法做连续性校验，直接要求上层重拉快照
+        if not first_update_id or not final_update_id:
+            return False
+
+        if not self._initialized:
+            # 尚未拿到快照，先缓存；等待 apply_snapshot 回放
+            self._buffer.append({"U": first_update_id, "u": final_update_id, "pu": prev_final_update_id, "b": bids, "a": asks})
+            self._syncing = True
+            return False
+
+        # 过期更新直接忽略
+        if final_update_id <= self.last_update_id:
+            return True
+
+        expected_next = self.last_update_id + 1
+
+        # 首包校验：要求覆盖 last_update_id+1
+        covers_next = first_update_id <= expected_next <= final_update_id
+
+        # 连续性校验：优先使用 pu；否则使用 U 递增
+        if prev_final_update_id is not None:
+            if prev_final_update_id != self.last_update_id and not covers_next:
+                return False
+        else:
+            if first_update_id != expected_next and not covers_next:
+                return False
+
+        return self.apply_delta(bids, asks, final_update_id)
     
     def calculate_obi(self, levels: int = 10) -> Decimal:
         """

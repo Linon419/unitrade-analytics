@@ -83,11 +83,9 @@ anomaly_detector:
   
   rising_index:
     enabled: true
-    price_structure_weight: 0.35
-    oi_flow_weight: 0.30
-    recency_weight: 0.20
+    price_structure_weight: 0.60
+    oi_flow_weight: 0.25
     volume_weight: 0.15
-    recency_decay_hours: 24.0
     signal_ttl_days: 5
     trend_mix_weight: 0.2
     trend_angle_cap_deg: 0.6

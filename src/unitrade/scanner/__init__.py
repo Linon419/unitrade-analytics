@@ -20,22 +20,44 @@ from .market_scanner import (
     MarketScannerConfig,
     run_market_scanner,
 )
+from .big_trade_monitor import (
+    BigTradeMonitor,
+    BigTradeMonitorConfig,
+)
+from .oi_price_monitor import (
+    OIPriceMonitor,
+    OIPriceMonitorConfig,
+)
 from .ema_radar import (
     EMARadar,
     EMARadarConfig,
     EMATrendSignal,
 )
-from .wavetrend_scanner import (
-    WaveTrendScanner,
-    WaveTrendConfig,
-    WaveTrendSignal,
-)
-from .squeeze_momentum_scanner import (
-    SqueezeMomentumScanner,
-    SqueezeConfig,
-    SqueezeSignal,
-    run_squeeze_scanner,
-)
+
+# Optional scanners (may require extra dependencies like pandas_ta)
+try:
+    from .wavetrend_scanner import (
+        WaveTrendScanner,
+        WaveTrendConfig,
+        WaveTrendSignal,
+    )
+except ModuleNotFoundError:  # pragma: no cover
+    WaveTrendScanner = None
+    WaveTrendConfig = None
+    WaveTrendSignal = None
+
+try:
+    from .squeeze_momentum_scanner import (
+        SqueezeMomentumScanner,
+        SqueezeConfig,
+        SqueezeSignal,
+        run_squeeze_scanner,
+    )
+except ModuleNotFoundError:  # pragma: no cover
+    SqueezeMomentumScanner = None
+    SqueezeConfig = None
+    SqueezeSignal = None
+    run_squeeze_scanner = None
 from .signal_detector import (
     AnomalyDetector,
     AnomalyConfig,
@@ -65,15 +87,21 @@ __all__ = [
     "MarketScanner",
     "MarketScannerConfig",
     "run_market_scanner",
+    # Big Trade Monitor
+    "BigTradeMonitor",
+    "BigTradeMonitorConfig",
+    # OI + Price Monitor
+    "OIPriceMonitor",
+    "OIPriceMonitorConfig",
     # EMA Trend Radar
     "EMARadar",
     "EMARadarConfig",
     "EMATrendSignal",
-    # WaveTrend Scanner
+    # WaveTrend Scanner (optional)
     "WaveTrendScanner",
     "WaveTrendConfig",
     "WaveTrendSignal",
-    # Squeeze Momentum Scanner
+    # Squeeze Momentum Scanner (optional)
     "SqueezeMomentumScanner",
     "SqueezeConfig",
     "SqueezeSignal",
@@ -89,3 +117,14 @@ __all__ = [
     "get_rising_ranking",
     "scheduled_ranking_push",
 ]
+
+# Hide optional scanners from `__all__` if dependencies are missing.
+if WaveTrendScanner is None:
+    for name in ("WaveTrendScanner", "WaveTrendConfig", "WaveTrendSignal"):
+        if name in __all__:
+            __all__.remove(name)
+
+if SqueezeMomentumScanner is None:
+    for name in ("SqueezeMomentumScanner", "SqueezeConfig", "SqueezeSignal", "run_squeeze_scanner"):
+        if name in __all__:
+            __all__.remove(name)

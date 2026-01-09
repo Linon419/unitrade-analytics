@@ -1,7 +1,7 @@
 """
 上涨指数排行系统
 
-从 Redis 中读取 AnomalyDetector 产生的突破信号，按资金流/价格结构/新鲜度/量能综合评分。
+从 Redis 中读取 AnomalyDetector 产生的突破信号，按资金流/价格结构/量能综合评分。
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import aiohttp
-import numpy as np
 
 from .redis_state import RedisStateManager
 from unitrade.core.time import format_ts, resolve_tz
@@ -34,14 +33,11 @@ class RisingIndexConfig:
     redis_prefix: str = "anomaly"
 
     # 权重
-    price_structure_weight: float = 0.35
-    oi_flow_weight: float = 0.30
-    recency_weight: float = 0.20
+    price_structure_weight: float = 0.60
+    oi_flow_weight: float = 0.25
     volume_weight: float = 0.15
 
     # 时间衰减
-    recency_decay_hours: float = 24.0  # 24小时后信号权重衰减一半
-
     # 信号保留时间
     signal_ttl_days: int = 5
 
@@ -64,7 +60,6 @@ class RisingScore:
     total_score: float
     price_structure_score: float
     oi_flow_score: float
-    recency_score: float
     volume_score: float
     signal_count: int
     cumulative_oi_change: float
@@ -91,9 +86,8 @@ class RisingIndex:
     上涨指数排行系统
 
     评分算法:
-    - 价格结构 (35%): 更高低点、EMA 排列、EMA200 距离、突破持续性
-    - 资金流入 (30%): 累计 OI 变化、OI 增加一致性
-    - 动量新鲜度 (20%): 近期信号权重更高 (指数衰减)
+    - 价格结构 (60%): 更高低点、EMA 排列、EMA200 距离、突破持续性
+    - 资金流入 (25%): 累计 OI 变化、OI 增加一致性
     - 成交量持续性 (15%): 平均放量倍数
     """
 
@@ -163,7 +157,6 @@ class RisingIndex:
 
     async def _calc_symbol_score(self, symbol: str) -> Optional[RisingScore]:
         """计算单个币种的上涨指数"""
-        now = time.time()
         signals = await self._state_manager.get_breakout_signals(symbol=symbol, prefix=self.config.redis_prefix)
 
         if not signals:
@@ -171,11 +164,10 @@ class RisingIndex:
 
         oi_changes: List[float] = []
         rvols: List[float] = []
-        recency_weights: List[float] = []
         prices: List[float] = []
         ema200s: List[float] = []
 
-        for signal_data, timestamp in signals:
+        for signal_data, _timestamp in signals:
             parts = signal_data.split("|")
             if len(parts) >= 4:
                 oi_change = float(parts[0])
@@ -188,18 +180,12 @@ class RisingIndex:
                 prices.append(price)
                 ema200s.append(ema200)
 
-                hours_ago = (now - timestamp) / 3600
-                decay = float(np.exp(-hours_ago / self.config.recency_decay_hours))
-                recency_weights.append(decay)
-
         if not oi_changes:
             return None
 
         cumulative_oi = sum(oi_changes)
         oi_consistency = sum(1 for oi in oi_changes if oi > 0) / len(oi_changes)
         oi_score = self._normalize(cumulative_oi, 0, 0.5) * 0.6 + oi_consistency * 0.4
-
-        recency_score = sum(recency_weights) / len(recency_weights) if recency_weights else 0.0
 
         avg_rvol = sum(rvols) / len(rvols) if rvols else 0.0
         volume_score = self._normalize(avg_rvol, 1, 10)
@@ -208,11 +194,19 @@ class RisingIndex:
             symbol, prices[-1] if prices else 0.0, ema200s[-1] if ema200s else 0.0
         )
 
+        weight_sum = (
+            float(self.config.price_structure_weight)
+            + float(self.config.oi_flow_weight)
+            + float(self.config.volume_weight)
+        )
+        weight_sum = weight_sum if weight_sum > 0 else 1.0
         total = (
-            self.config.price_structure_weight * price_score
-            + self.config.oi_flow_weight * oi_score
-            + self.config.recency_weight * recency_score
-            + self.config.volume_weight * volume_score
+            (
+                self.config.price_structure_weight * price_score
+                + self.config.oi_flow_weight * oi_score
+                + self.config.volume_weight * volume_score
+            )
+            / weight_sum
         ) * 100
 
         return RisingScore(
@@ -220,7 +214,6 @@ class RisingIndex:
             total_score=total,
             price_structure_score=price_score * 100,
             oi_flow_score=oi_score * 100,
-            recency_score=recency_score * 100,
             volume_score=volume_score * 100,
             signal_count=len(signals),
             cumulative_oi_change=cumulative_oi,
@@ -235,7 +228,7 @@ class RisingIndex:
         """计算价格结构得分"""
         try:
             url = "https://fapi.binance.com/fapi/v1/klines"
-            params = {"symbol": symbol, "interval": "4h", "limit": 50}
+            params = {"symbol": symbol, "interval": "30m", "limit": 50}
 
             async with self._session.get(url, params=params) as resp:
                 if resp.status != 200:
@@ -385,7 +378,7 @@ class RisingIndex:
 
             lines.append(f"{i}. *{base}* ⚡{s.total_score:.1f}  ({since})")
             lines.append(
-                f"   价{s.price_structure_score:.1f} 资{s.oi_flow_score:.1f} 新{s.recency_score:.1f} 量{s.volume_score:.1f} | 首上榜{first}"
+                f"   价{s.price_structure_score:.1f} 资{s.oi_flow_score:.1f} 量{s.volume_score:.1f} | 首上榜{first}"
             )
         return "\n".join(lines)
 

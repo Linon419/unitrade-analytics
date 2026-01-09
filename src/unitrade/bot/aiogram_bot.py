@@ -648,7 +648,7 @@ async def generate_rising_index() -> str:
             
             lines.append(
                 f"{i}. <b>{base}</b> ⚡{score.total_score:.1f}分  ({since})\n"
-                f"   价{score.price_structure_score:.1f} 资{score.oi_flow_score:.1f} 新{score.recency_score:.1f} 量{score.volume_score:.1f}"
+                f"   价{score.price_structure_score:.1f} 资{score.oi_flow_score:.1f} 量{score.volume_score:.1f}"
                 f" | 首上榜{first} | 趋势{trend} | 信号{score.signal_count}次"
             )
         

@@ -569,7 +569,6 @@ class UniTradeBotHandler:
 
             keys = await state_manager.scan_signal_keys(prefix="anomaly")
             now = time.time()
-            decay_hours = 24.0
 
             rows: List[tuple] = []
             for key in keys:
@@ -601,12 +600,12 @@ class UniTradeBotHandler:
 
                 cumulative_oi = float(sum(oi_changes))
                 avg_rvol = float(sum(rvols) / len(rvols)) if rvols else 0.0
-                recency_score = math.exp(-((now - last_ts) / 3600.0) / decay_hours) if last_ts > 0 else 0.0
 
                 oi_score = self._normalize(cumulative_oi, 0.0, 0.5)
                 volume_score = self._normalize(avg_rvol, 1.0, 10.0)
 
-                total_score = 100.0 * (0.45 * oi_score + 0.30 * recency_score + 0.25 * volume_score)
+                weight_sum = 0.45 + 0.25
+                total_score = 100.0 * (0.45 * oi_score + 0.25 * volume_score) / weight_sum
 
                 if last_price and last_ema200:
                     ema_alignment = "bullish" if last_price >= last_ema200 else "bearish"
@@ -624,7 +623,6 @@ class UniTradeBotHandler:
                         last_price,
                         last_ts,
                         oi_score,
-                        recency_score,
                         volume_score,
                     )
                 )
@@ -646,7 +644,7 @@ class UniTradeBotHandler:
                 ]
             else:
                 lines.append("")
-                for i, (sym, score, cum_oi, avg_rvol, ema_align, count, last_price, last_ts, oi_s, rec_s, vol_s) in enumerate(top, 1):
+                for i, (sym, score, cum_oi, avg_rvol, ema_align, count, last_price, last_ts, oi_s, vol_s) in enumerate(top, 1):
                     base = sym.replace("USDT", "")
                     trend = "↑" if ema_align == "bullish" else "↓" if ema_align == "bearish" else "→"
                     oi_sign = "+" if cum_oi >= 0 else ""
@@ -667,7 +665,7 @@ class UniTradeBotHandler:
                         f"{i}. <b>{base}</b> {score:.1f}  OI {oi_sign}{cum_oi:.1%}  RVOL {avg_rvol:.1f}x  {trend}  ({count}次)"
                     )
                     lines.append(
-                        f"   首次上榜: {first_str}  自上榜: {since_abs} ({since_pct})  评分: oi={oi_s:.2f} rec={rec_s:.2f} vol={vol_s:.2f}"
+                        f"   首次上榜: {first_str}  自上榜: {since_abs} ({since_pct})  评分: oi={oi_s:.2f} vol={vol_s:.2f}"
                     )
 
             await state_manager.close()

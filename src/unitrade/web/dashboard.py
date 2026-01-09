@@ -1136,9 +1136,8 @@ class WebDashboard:
         上涨指数排行 API
         
         返回基于异动信号的上涨潜力排行榜
-        - 价格结构 35%
-        - 资金流入 30%
-        - 动量新鲜度 20%
+        - 价格结构 60%
+        - 资金流入 25%
         - 成交量持续性 15%
         """
         # Respect config switch: anomaly_detector.enabled + anomaly_detector.rising_index.enabled
@@ -1208,7 +1207,6 @@ class WebDashboard:
                         "score": round(s.total_score, 1),
                         "price_score": round(s.price_structure_score, 1),
                         "oi_score": round(s.oi_flow_score, 1),
-                        "recency_score": round(s.recency_score, 1),
                         "volume_score": round(s.volume_score, 1),
                         "signal_count": s.signal_count,
                         "oi_change": round(s.cumulative_oi_change, 4),

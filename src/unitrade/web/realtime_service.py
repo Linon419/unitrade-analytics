@@ -46,9 +46,15 @@ class TimeframeBucket:
     """时间周期数据桶"""
     obi_sum: float = 0
     obi_count: int = 0
-    cvd_delta: float = 0  # 该周期内的 CVD 变化
-    buy_volume: float = 0
-    sell_volume: float = 0
+    # 统一口径：USDT（quote）
+    cvd_delta: float = 0  # 该周期内的 CVD 变化（USDT）
+    buy_volume: float = 0  # buy notional (USDT)
+    sell_volume: float = 0  # sell notional (USDT)
+
+    # 辅助口径：数量（base qty），不持久化，仅用于展示/调试
+    cvd_delta_qty: float = 0
+    buy_volume_qty: float = 0
+    sell_volume_qty: float = 0
     trade_count: int = 0
     high_price: float = 0
     low_price: float = float('inf')
@@ -63,6 +69,10 @@ class TimeframeBucket:
     @property
     def net_volume(self) -> float:
         return self.buy_volume - self.sell_volume
+
+    @property
+    def net_volume_qty(self) -> float:
+        return self.buy_volume_qty - self.sell_volume_qty
     
     def to_dict(self, symbol: str, timeframe: str) -> dict:
         """转换为字典 (用于存储)"""
@@ -90,6 +100,9 @@ class TimeframeBucket:
         bucket.cvd_delta = data.get("cvd_delta", 0)
         bucket.buy_volume = data.get("buy_volume", 0)
         bucket.sell_volume = data.get("sell_volume", 0)
+        bucket.cvd_delta_qty = 0
+        bucket.buy_volume_qty = 0
+        bucket.sell_volume_qty = 0
         bucket.high_price = data.get("high_price", 0)
         bucket.low_price = data.get("low_price", 0)
         bucket.open_price = data.get("open_price", 0)
@@ -159,7 +172,8 @@ class MultiTimeframeAggregator:
         }
         
         # 累积 CVD (从启动开始)
-        self.cumulative_cvd: float = 0
+        self.cumulative_cvd: float = 0  # USDT
+        self.cumulative_cvd_qty: float = 0  # base qty
     
     def _load_history(self) -> None:
         """加载历史数据"""
@@ -220,8 +234,10 @@ class MultiTimeframeAggregator:
         is_buy = trade.side.value == "buy"
         
         # 更新累积 CVD
-        delta = qty if is_buy else -qty
-        self.cumulative_cvd += delta
+        delta_qty = qty if is_buy else -qty
+        delta_usdt = (qty * price) if is_buy else -(qty * price)
+        self.cumulative_cvd_qty += delta_qty
+        self.cumulative_cvd += delta_usdt
         
         for tf, bucket in self.current.items():
             period_start = self._get_period_start(tf)
@@ -250,11 +266,14 @@ class MultiTimeframeAggregator:
                 bucket.low_price = price
             
             if is_buy:
-                bucket.buy_volume += qty
+                bucket.buy_volume += qty * price
+                bucket.buy_volume_qty += qty
             else:
-                bucket.sell_volume += qty
+                bucket.sell_volume += qty * price
+                bucket.sell_volume_qty += qty
             
-            bucket.cvd_delta += delta
+            bucket.cvd_delta += delta_usdt
+            bucket.cvd_delta_qty += delta_qty
     
     def get_timeframe_metrics(self, timeframe: str) -> dict:
         """获取指定周期的指标"""
@@ -270,6 +289,9 @@ class MultiTimeframeAggregator:
         total_cvd = current.cvd_delta
         total_buy = current.buy_volume
         total_sell = current.sell_volume
+        total_buy_qty = current.buy_volume_qty
+        total_sell_qty = current.sell_volume_qty
+        total_cvd_qty = current.cvd_delta_qty
         
         for bucket in history[-5:]:  # 最近 5 个完成的周期
             total_obi += bucket.obi_sum
@@ -277,23 +299,55 @@ class MultiTimeframeAggregator:
             total_cvd += bucket.cvd_delta
             total_buy += bucket.buy_volume
             total_sell += bucket.sell_volume
+            total_buy_qty += bucket.buy_volume_qty
+            total_sell_qty += bucket.sell_volume_qty
+            total_cvd_qty += bucket.cvd_delta_qty
         
         return {
             "symbol": self.symbol,
             "timeframe": timeframe,
+            "units": {
+                "obi_avg": "percent",
+                "cvd": "usdt",
+                "buy_volume": "usdt",
+                "sell_volume": "usdt",
+                "net_volume": "usdt",
+                "cvd_qty": "base_qty",
+                "buy_volume_qty": "base_qty",
+                "sell_volume_qty": "base_qty",
+                "net_volume_qty": "base_qty",
+                "price": "quote_price",
+            },
             "current": {
                 "obi_avg": round(current.obi_avg * 100, 2),  # 百分比
-                "cvd": round(current.cvd_delta, 4),
-                "buy_volume": round(current.buy_volume, 4),
-                "sell_volume": round(current.sell_volume, 4),
-                "net_volume": round(current.net_volume, 4),
+                "cvd": round(current.cvd_delta, 2),
+                "buy_volume": round(current.buy_volume, 2),
+                "sell_volume": round(current.sell_volume, 2),
+                "net_volume": round(current.net_volume, 2),
+                "cvd_qty": round(current.cvd_delta_qty, 4),
+                "buy_volume_qty": round(current.buy_volume_qty, 4),
+                "sell_volume_qty": round(current.sell_volume_qty, 4),
+                "net_volume_qty": round(current.net_volume_qty, 4),
                 "trade_count": current.trade_count,
                 "open": current.open_price,
                 "high": current.high_price,
                 "low": current.low_price if current.low_price != float('inf') else 0,
                 "close": current.close_price,
             },
-            "cumulative_cvd": round(self.cumulative_cvd, 4),
+            # 近 5 个完成周期 + 当前周期的汇总（用于更稳定的展示/策略过滤）
+            "rolling_5": {
+                "obi_avg": round((total_obi / total_obi_count) * 100, 2) if total_obi_count > 0 else 0,
+                "cvd": round(total_cvd, 2),
+                "buy_volume": round(total_buy, 2),
+                "sell_volume": round(total_sell, 2),
+                "net_volume": round(total_buy - total_sell, 2),
+                "cvd_qty": round(total_cvd_qty, 4),
+                "buy_volume_qty": round(total_buy_qty, 4),
+                "sell_volume_qty": round(total_sell_qty, 4),
+                "net_volume_qty": round(total_buy_qty - total_sell_qty, 4),
+            },
+            "cumulative_cvd": round(self.cumulative_cvd, 2),
+            "cumulative_cvd_qty": round(self.cumulative_cvd_qty, 4),
             "period_start": datetime.fromtimestamp(current.start_time).isoformat(),
             "history_count": len(history),
             "timestamp": datetime.now().isoformat(),
@@ -481,14 +535,36 @@ class RealtimeDataService:
             symbol = data.get("s", "")
             
             if symbol in self.orderbooks:
-                self.orderbooks[symbol].apply_delta(
+                ob = self.orderbooks[symbol]
+
+                # Binance depthUpdate 序号字段
+                first_update_id = int(data.get("U", 0) or 0)
+                final_update_id = int(data.get("u", 0) or 0)
+                prev_final_update_id = data.get("pu", None)
+                prev_final_update_id = int(prev_final_update_id) if prev_final_update_id is not None else None
+
+                if not ob.is_initialized:
+                    await self._fetch_orderbook_snapshot(symbol)
+                    if not ob.is_initialized:
+                        return
+
+                ok = ob.apply_binance_delta(
                     bids=data.get("b", []),
                     asks=data.get("a", []),
-                    update_id=data.get("u", 0)
+                    first_update_id=first_update_id,
+                    final_update_id=final_update_id,
+                    prev_final_update_id=prev_final_update_id,
                 )
+
+                if not ok:
+                    # 断档/不同步：重拉快照，避免 OBI “漂移”误导交易决策
+                    logger.warning(f"Orderbook out of sync for {symbol}, resyncing snapshot...")
+                    ob.clear()
+                    await self._fetch_orderbook_snapshot(symbol)
+                    return
                 
                 # 更新 OBI 到多周期聚合器
-                metrics = self.orderbooks[symbol].get_metrics()
+                metrics = ob.get_metrics()
                 if metrics and symbol in self.aggregators:
                     self.aggregators[symbol].update_obi(float(metrics.obi))
         except Exception as e:
